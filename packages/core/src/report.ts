@@ -18,18 +18,19 @@ export interface ReportOptions { fileName?: string; opmFiles?: Record<string, st
 
 export function formatReport(r: ConvertResult, opts: ReportOptions = {}): string {
   const L: string[] = [];
-  const vopm = r.fmMode === 'vopm';
+  const vopm = r.fmMode === 'vopm' || r.fmMode === 'opm68';
+  const opm68 = r.fmMode === 'opm68';
   L.push(`# ${r.title || opts.fileName || 'MDX'}`);
   L.push('');
   if (opts.fileName) L.push(`- ファイル: ${opts.fileName}`);
   L.push(`- PDX: ${r.pdxName || 'なし'}${r.pcm8 ? ' (PCM8 16ch)' : ''}`);
   L.push(`- 長さ: ${mmss(r.durationSec)}${r.loopSec !== null ? ` (ループ開始 ${mmss(r.loopSec)})` : ''}`);
-  L.push(`- FM 音色: ${vopm ? 'VOPM (.opm のプログラム番号)' : 'GM 音色に近似'} / 音量: ${{ bake: '音色の TL に焼き込み', cc7: 'CC7', velocity: 'ベロシティ' }[r.volumeMode]}`);
+  L.push(`- FM 音色: ${opm68 ? 'OPM68 (ノートのベロシティ = 音色番号+1)' : vopm ? 'VOPM (.opm のプログラム番号)' : 'GM 音色に近似'} / 音量: ${{ bake: '音色の TL に焼き込み', cc7: 'CC7', velocity: 'ベロシティ' }[r.volumeMode]}`);
   L.push('');
 
   // ---- setup ----
   if (vopm) {
-    L.push('## VOPM の割り当て');
+    L.push(opm68 ? '## OPM68 の割り当て' : '## VOPM の割り当て');
     L.push('');
     if (r.channels.filter((c) => c.kind === 'FM').every((c) => c.midiCh === 1)) {
       L.push('FM の各トラックはすべて MIDI ch1 で出力しています。トラックごとに VOPM を 1 つずつ割り当ててください。');
@@ -60,12 +61,12 @@ export function formatReport(r: ConvertResult, opts: ReportOptions = {}): string
         L.push(`音色の切り替え (${tl.length - 1} 回): ${shown}${tl.length > 40 ? ' → …' : ''}`);
         L.push('');
       }
-      L.push(`| MDX 音色 | 音量 | ${vopm ? 'Program (VOPM)' : 'GM Program'} | 音数 | 使用区間 |`);
+      L.push(`| MDX 音色 | 音量 | ${opm68 ? 'Velocity (OPM68)' : vopm ? 'Program (VOPM)' : 'GM Program'} | 音数 | 使用区間 |`);
       L.push('|---|---|---|---|---|');
       for (const u of c.usage) {
         const v = r.voices.find((x) => x.number === u.voice);
         const vs = u.voice >= 0 ? `@${u.voice}${v ? ` (AL${v.con} FB${v.fl})` : ''}` : '(未指定)';
-        const prog = u.program < 0 ? '-' : vopm ? `${u.program}` : `${u.program + 1} ${GM_PROGRAM_NAMES[u.program] ?? ''}`;
+        const prog = u.program < 0 ? '-' : opm68 ? `${u.program + 1}` : vopm ? `${u.program}` : `${u.program + 1} ${GM_PROGRAM_NAMES[u.program] ?? ''}`;
         L.push(`| ${vs} | ${volumeLabel(u.att)} | ${prog} | ${u.notes} | ${mmss(u.firstSec)}–${mmss(u.lastSec)} |`);
       }
     } else {

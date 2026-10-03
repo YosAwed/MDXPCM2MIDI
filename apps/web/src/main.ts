@@ -96,7 +96,7 @@ function options(it: Item): ConvertOptions {
     loops: +$<HTMLInputElement>('loops').value || 2,
     fadeSeconds: +$<HTMLInputElement>('fade').value || 0,
     bendRange: +$<HTMLInputElement>('bend').value || 12,
-    fmMode: $<HTMLSelectElement>('fmMode').value === 'vopm' ? 'vopm' : 'gm',
+    fmMode: (['vopm', 'opm68'].includes($<HTMLSelectElement>('fmMode').value) ? $<HTMLSelectElement>('fmMode').value : 'gm') as 'gm' | 'vopm' | 'opm68',
     volumeMode: (() => { const v = $<HTMLSelectElement>('volumeMode').value; return v === 'auto' ? undefined : (v as 'cc7' | 'velocity' | 'bake'); })(),
     pcmMode: mode === 'gm' ? 'gm' : mode === 'sf2' ? (hasPdx ? 'sf2' : 'gm') : hasPdx ? 'sf2' : 'gm',
   };

@@ -5,3 +5,8 @@ corpus-report*
 *.mid
 *.sf2
 !packages/core/test/fixtures/**
+plugin/opm68/bin*/
+plugin/opm68/build*/
+plugin/opm68/test/render
+plugin/opm68/test/clap_smoke
+plugin/DPF

@@ -7,8 +7,9 @@ import { defaultProgramFor, defaultDrumFor } from './gm.js';
 import { assignOpmSlots, writeOpmBank, writeOpmEntries, applyVolume, type OpmEntry } from './opm.js';
 
 export type PcmMode = 'sf2' | 'gm';
-/** 'gm': guess GM programs. 'vopm': program change = slot in the exported .OPM bank (for VOPM). */
-export type FmMode = 'gm' | 'vopm';
+/** 'gm': guess GM programs. 'vopm': program change = slot in the exported .OPM bank (for VOPM).
+ *  'opm68': for the bundled OPM68 plugin - note velocity (1..127) = bank slot + 1, no program changes. */
+export type FmMode = 'gm' | 'vopm' | 'opm68';
 
 export interface ConvertOptions {
   loops?: number;               // default 2
@@ -107,8 +108,10 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   const usedVoices = seq.events.filter((e) => e.type === 'voice' && seq.usedChannels[e.ch]).map((e) => (e as { voice: number }).voice).filter((v) => mdx.voices.has(v));
   const slotMap = assignOpmSlots(usedVoices.length ? usedVoices : [...mdx.voices.keys()]);
   const warnings = [...seq.warnings];
-  const volumeMode = options.volumeMode ?? (fmMode === 'vopm' ? 'bake' : 'cc7');
-  const bake = fmMode === 'vopm' && volumeMode === 'bake';
+  const opmOut = fmMode === 'vopm' || fmMode === 'opm68';
+  const MAXSLOTS = fmMode === 'opm68' ? 127 : 128;
+  const volumeMode = options.volumeMode ?? (opmOut ? 'bake' : 'cc7');
+  const bake = opmOut && volumeMode === 'bake';
   const mul0Fix = new Set<number>();
   let opmVoices = mdx.voices;
   if (fmMode === 'vopm' && options.vopmMul0Fix !== false) {
@@ -150,7 +153,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
     };
     collect();
     // make every channel fit into 128 programs (coarser volume steps if needed)
-    for (let ch = 0; ch < 8; ch++) while (perCh[ch].size > 128 && quant[ch] < 16) { quant[ch]++; collect(); }
+    for (let ch = 0; ch < 8; ch++) while (perCh[ch].size > MAXSLOTS && quant[ch] < 16) { quant[ch]++; collect(); }
     if (quant.some((q) => q > 1)) warnings.push('音量の段階が多いため一部チャンネルの音量を量子化しました');
     const all: string[] = [];
     for (const o of comboOrder) for (const k of o) if (!all.includes(k)) all.push(k);
@@ -158,7 +161,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
       const [v, a] = k.split(':').map(Number);
       return { slot, voice: applyVolume(opmVoices.get(v)!, a), name: `MDX @${v} att${a}` };
     };
-    if (all.length <= 128) {
+    if (all.length <= MAXSLOTS) {
       all.forEach((k, i) => { for (const m of comboSlot) m.set(k, i); });
       opmBank = writeOpmEntries(all.map(entryFor), { name: mdx.title, lfo: seq.opmLfo });
       opmBanks = [{ label: 'all', channels: 'ABCDEFGH', text: opmBank, voices: all.length }];
@@ -298,8 +301,14 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
           const st = bakeState[e.ch];
           if (st.voice >= 0) {
             const slot = comboSlot[e.ch].get(`${st.voice}:${qAtt(e.ch, st.att)}`);
-            if (slot !== undefined && slot !== st.prog) { tr.add(T, [0xc0 | mc, slot], 3); st.prog = slot; }
+            if (slot !== undefined && slot !== st.prog) { if (fmMode !== 'opm68') tr.add(T, [0xc0 | mc, slot], 3); st.prog = slot; }
             fixProgram(e.ch, e.t, st.prog);
+          }
+          if (fmMode === 'opm68') {
+            const slot = st.voice >= 0 ? comboSlot[e.ch].get(`${st.voice}:${qAtt(e.ch, st.att)}`) : undefined;
+            if (slot === undefined) break; // no voice selected yet: MXDRV stays silent too
+            tr.add(T, [0x90 | mc, key, slot + 1], 6);
+            break;
           }
           tr.add(T, [0x90 | mc, key, 127], 6);
           break;

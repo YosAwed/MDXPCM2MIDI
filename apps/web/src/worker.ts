@@ -25,12 +25,12 @@ self.onmessage = (ev: MessageEvent<WorkerReq>) => {
       const r = convert(req.mdx, req.pdx, req.options);
       const stem = req.fileName.replace(/\.mdx$/i, '');
       const opmFiles = Object.fromEntries(r.opmBanks.map((b) => [b.label, r.opmBanks.length === 1 ? `${stem}.opm` : `${stem}_ch${b.label}.opm`]));
-      const report = formatReport(r, { fileName: req.fileName, opmFiles: req.options.fmMode === 'vopm' ? opmFiles : undefined });
+      const report = formatReport(r, { fileName: req.fileName, opmFiles: req.options.fmMode !== 'gm' && req.options.fmMode ? opmFiles : undefined });
       const transfer = [r.midi.buffer, ...(r.sf2 ? [r.sf2.buffer] : [])] as ArrayBuffer[];
       post({
         id: req.id, ok: true, kind: 'convert', midi: r.midi, sf2: r.sf2, durationSec: r.durationSec, loopSec: r.loopSec,
         warnings: r.warnings, channels: r.usedChannels, pcmKeys: r.pcmKeys.length, programs: r.programs,
-        opmBanks: req.options.fmMode === 'vopm' ? r.opmBanks : null, opmVoices: r.opmBanks.reduce((a, b) => a + b.voices, 0), report,
+        opmBanks: req.options.fmMode === 'vopm' || req.options.fmMode === 'opm68' ? r.opmBanks : null, opmVoices: r.opmBanks.reduce((a, b) => a + b.voices, 0), report,
       }, transfer);
     }
   } catch (e) {

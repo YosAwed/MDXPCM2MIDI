@@ -4,10 +4,10 @@ import { convert, formatReport } from './index.js';
 
 const args = process.argv.slice(2);
 if (!args.length || args.includes('-h')) {
-  console.log('usage: mdx2mid <file.mdx> [-p file.pdx] [-o out.mid] [--loops N] [--fade SEC] [--gm] [--vopm] [--json]');
+  console.log('usage: mdx2mid <file.mdx> [-p file.pdx] [-o out.mid] [--loops N] [--fade SEC] [--gm] [--vopm|--opm68] [--json]');
   process.exit(0);
 }
-let input = '', pdxPath = '', out = '', loops = 2, fade = 0, gm = false, json = false, noPdx = false, vopm = false;
+let input = '', pdxPath = '', out = '', loops = 2, fade = 0, gm = false, json = false, noPdx = false, vopm = false, opm68 = false;
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '-p') pdxPath = args[++i];
@@ -16,6 +16,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--fade') fade = +args[++i];
   else if (a === '--gm') gm = true;
   else if (a === '--vopm') vopm = true;
+  else if (a === '--opm68') { opm68 = true; vopm = true; }
   else if (a === '--no-pdx') noPdx = true;
   else if (a === '--json') json = true;
   else input = a;
@@ -38,7 +39,7 @@ try {
   const head = convert(mdxBuf, null, { loops, fadeSeconds: fade, pcmMode: 'gm' });
   if (!pdxPath && !noPdx && !gm) pdxPath = findPdx(head.pdxName);
   const pdxBuf = pdxPath ? new Uint8Array(readFileSync(pdxPath)) : null;
-  res = convert(mdxBuf, pdxBuf, { loops, fadeSeconds: fade, pcmMode: gm || !pdxBuf ? 'gm' : 'sf2', fmMode: vopm ? 'vopm' : 'gm' });
+  res = convert(mdxBuf, pdxBuf, { loops, fadeSeconds: fade, pcmMode: gm || !pdxBuf ? 'gm' : 'sf2', fmMode: opm68 ? 'opm68' : vopm ? 'vopm' : 'gm' });
 } catch (e) {
   if (json) console.log(JSON.stringify({ file: input, ok: false, error: String((e as Error).message) }));
   else console.error(`${input}: ${(e as Error).message}`);
