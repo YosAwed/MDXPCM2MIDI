@@ -11,6 +11,7 @@ export type SeqEvent =
   | { t: number; ch: number; type: 'volume'; att: number } // OPM TL attenuation (0.75 dB steps)
   | { t: number; ch: number; type: 'pan'; pan: number }   // 0 off, 1 L, 2 R, 3 C
   | { t: number; ch: number; type: 'pitch'; semis: number } // offset from note in semitones
+  | { t: number; ch: number; type: 'porta'; perTick: number } // portaEvents only: portamento (1/16384 semitone per clock) starts now
   | { t: number; ch: -1; type: 'tempo'; timerB: number }
   | { t: number; ch: -1; type: 'fade'; speed: number }
   | { t: number; ch: -1; type: 'loopPoint' };
@@ -23,6 +24,8 @@ export interface OpmLfo { wave: number; sync: number; lfrq: number; pmd: number;
 export interface SeqOptions {
   loops?: number;       // how many times looping channels should play the loop body (default 2)
   maxTicks?: number;    // safety cap
+  /** Emit portamento as 'porta' events (rate at note start) instead of folding it into 'pitch'. */
+  portaEvents?: boolean;
 }
 
 export interface SeqResult {
@@ -76,6 +79,7 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
   const d = mdx.data;
   const loopsWanted = Math.max(1, opts.loops ?? 2);
   const maxTicks = opts.maxTicks ?? 48 * 4 * 1200; // ~1200 bars
+  const portaEv = opts.portaEvents === true;
   const events: SeqEvent[] = [];
   const warnings: string[] = [];
   const warnOnce = new Set<string>();
@@ -129,17 +133,20 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
     const thisNoKeyOff = c.noKeyOff;
     c.noKeyOff = false;
     // portamento
+    const hadPorta = c.porta !== 0;
     c.porta = c.portaNext; c.portaNext = 0; c.portaAcc = 0;
     c.lfo.delayCnt = c.lfo.delay; c.lfo.phase = 0;
 
     if (c.tiePrev && !c.pcm && c.curKey === key) {
-      // tie: keep the note sounding
+      // tie: keep the note sounding (the portamento offset restarts from the note)
+      if (portaEv && (c.porta !== 0 || hadPorta)) events.push({ t, ch: c.idx, type: 'porta', perTick: c.porta });
     } else {
       if (c.curKey !== null) keyOff(c, t);
       if (c.keyOnDelay > 0 && c.keyOnDelay < len) {
         c.onAt = t + c.keyOnDelay; c.pendKey = key; c.pendNote = note;
       } else {
         events.push({ t, ch: c.idx, type: 'noteOn', note, key });
+        if (portaEv && c.porta !== 0) events.push({ t, ch: c.idx, type: 'porta', perTick: c.porta });
         c.curKey = key;
       }
     }
@@ -270,7 +277,7 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
   };
 
   const pitchOf = (c: Ch): number => {
-    let semis = c.detune / 64 + c.portaAcc / 16384;
+    let semis = c.detune / 64 + (portaEv ? 0 : c.portaAcc / 16384);
     if (c.lfo.on && c.lfo.period > 0 && c.lfo.delayCnt <= 0 && c.curKey !== null) {
       const per = c.lfo.period, ph = c.lfo.phase % (per * 4);
       const a = c.lfo.amp / 16384; // amplitude: per-tick delta (same unit as portamento)
@@ -293,6 +300,7 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
       if (c.offAt === t) { keyOff(c, t); c.offAt = -1; }
       if (c.onAt === t) {
         events.push({ t, ch: c.idx, type: 'noteOn', note: c.pendNote, key: c.pendKey });
+        if (portaEv && c.porta !== 0) events.push({ t, ch: c.idx, type: 'porta', perTick: c.porta });
         c.curKey = c.pendKey; c.onAt = -1;
       }
     }

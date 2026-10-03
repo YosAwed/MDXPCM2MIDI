@@ -37,7 +37,7 @@ export function formatReport(r: ConvertResult, opts: ReportOptions = {}): string
       L.push('');
     }
     if (opm68) {
-      L.push('FL Studio では各 OPM68 チャンネルの「ピッチ RANGE」を 48 にし、「Send pitch bend range」をオンにしてください(ポルタメント等はピッチベンドで出力しています)。');
+      L.push('FL Studio では各 OPM68 チャンネルの「ピッチ RANGE」を 48 にし、「Send pitch bend range」をオンにしてください(ディチューンとビブラートはピッチベンドで出力しています。ポルタメントはピアノロール最下部(ノート 0〜13)の制御ノートで送っているので、消さないでください)。');
       L.push('');
     }
     L.push('| MIDI ch | MDX ch | 読み込む .opm |');

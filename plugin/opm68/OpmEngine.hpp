@@ -4,6 +4,7 @@
 #include "ymfm/ymfm_opm.h"
 #include <cmath>
 #include <algorithm>
+#include <cstdint>
 
 class OpmEngine {
 public:
@@ -29,7 +30,7 @@ public:
         for (int c = 0; c < 8; c++) { fCh[c] = ChState(); write(0x08, c); }
         fProgram = 0; fVol = 127; fExpr = 127; fPan = 64; fBend = 0; fBendRange = fDefaultBend;
         fRpnMsb = fRpnLsb = 127; fAge = 0;
-        fLfoVoice = -1;
+        fLfoVoice = -1; fCtlHi = fCtlLo = -1; fLastOn = -1;
     }
 
     // ---- MIDI ----
@@ -40,6 +41,7 @@ public:
     void noteOn(int note, int vel)
     {
         if (vel == 0) { noteOff(note); return; }
+        if (note < kCtlKeys) { controlNote(note, vel); return; }
         int prog = fVelProg ? std::clamp(vel - 1, 0, 126) : fProgram;
         const OpmVoice& v = fBank.voice[prog];
         if (!v.valid) return;
@@ -48,6 +50,7 @@ public:
         ChState& ch = fCh[c];
         write(0x08, c);                 // key off now, key on after one chip sample
         ch.note = note; ch.held = true; ch.age = ++fAge;
+        ch.portaRate = 0; ch.portaOff = 0; ch.onTime = fNow; fLastOn = c;
         loadVoice(c, prog);
         setPitch(c);
         ch.pendingKeyOn = true;
@@ -55,6 +58,7 @@ public:
 
     void noteOff(int note)
     {
+        if (note < kCtlKeys) return;
         for (int c = 0; c < 8; c++) {
             if (fCh[c].held && fCh[c].note == note) {
                 fCh[c].held = false;
@@ -90,6 +94,17 @@ public:
         fChip.generate(&out);
         l = out.data[0] / 32768.0f;
         r = out.data[1] / 32768.0f;
+        ++fNow;
+        resolveControl();
+        // portamento: integrate while the key is held (MXDRV stops accumulating at key-off)
+        const bool tick = (fNow & 31) == 0;
+        for (int c = 0; c < 8; c++) {
+            ChState& ch = fCh[c];
+            if (ch.portaRate != 0 && ch.held) {
+                ch.portaOff += ch.portaRate / chipRate();
+                if (tick) setPitch(c);
+            }
+        }
         for (int c = 0; c < 8; c++) {
             if (fCh[c].pendingKeyOn) {
                 fCh[c].pendingKeyOn = false;
@@ -100,7 +115,37 @@ public:
     }
 
 private:
-    struct ChState { int note = -1; bool held = false; bool pendingKeyOn = false; unsigned age = 0; int loaded = -2; int levelKey = -1; };
+    struct ChState { int note = -1; bool held = false; bool pendingKeyOn = false; unsigned age = 0; int loaded = -2; int levelKey = -1;
+                     double portaRate = 0, portaOff = 0; uint64_t onTime = 0; };
+
+    // ---- portamento control notes ----
+    // DAWs (FL Studio) deliver pitch-bend automation only at block rate, which flattens MXDRV's fast
+    // portamento. The converter therefore sends each portamento as two silent "control notes" on
+    // keys 0-13 at the same time as the real note: keys 0-6 carry the high part, keys 7-13 the low
+    // part (value = key%7*127 + vel-1, 0..888 each). rate [semitones/s] = (hi*889 + lo - 395160) / 1000.
+    // With no note-on at the same moment (a tie), the rate restarts the portamento of the held note.
+    static constexpr int kCtlKeys = 14;
+    void controlNote(int key, int vel)
+    {
+        int v = (key % 7) * 127 + std::clamp(vel - 1, 0, 126);
+        if (key < 7) { fCtlHi = v; fCtlHiAt = fNow; } else { fCtlLo = v; fCtlLoAt = fNow; }
+    }
+    void resolveControl()
+    {
+        if (fCtlHi < 0 && fCtlLo < 0) return;
+        if (fCtlHi < 0 || fCtlLo < 0) { // half a pair: wait briefly, then drop it
+            uint64_t at = fCtlHi >= 0 ? fCtlHiAt : fCtlLoAt;
+            if (fNow - at > 256) fCtlHi = fCtlLo = -1;
+            return;
+        }
+        double rate = ((double)fCtlHi * 889 + fCtlLo - 395160) / 1000.0;
+        fCtlHi = fCtlLo = -1;
+        int c = -1;
+        if (fLastOn >= 0 && fCh[fLastOn].held && fNow - fCh[fLastOn].onTime <= 64) c = fLastOn;
+        else { unsigned best = 0; for (int i = 0; i < 8; i++) if (fCh[i].held && fCh[i].age >= best) { best = fCh[i].age; c = i; } }
+        if (c < 0) return;
+        fCh[c].portaRate = rate; fCh[c].portaOff = 0; setPitch(c);
+    }
 
     void write(int reg, int data) { fChip.write_address(reg); fChip.write_data(data & 0xff); }
 
@@ -173,7 +218,7 @@ private:
     {
         static const int code[12] = { 0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14 };
         // MXDRV note n = MIDI - 15 at 4 MHz (KF +5 like MXDRV); at 3.58 MHz the OPM is ~2 semitones lower.
-        double semis = (fCh[c].note - (f4MHz ? 15 : 13)) + (fBend / 8192.0) * fBendRange;
+        double semis = (fCh[c].note - (f4MHz ? 15 : 13)) + (fBend / 8192.0) * fBendRange + fCh[c].portaOff;
         int p = (int)std::lround(semis * 64.0) + (f4MHz ? 5 : 0);
         p = std::clamp(p, 0, 8 * 12 * 64 - 1);
         int n = p >> 6, kf = p & 63;
@@ -190,4 +235,6 @@ private:
     int fProgram = 0, fVol = 127, fExpr = 127, fPan = 64, fBend = 0, fBendRange = 12, fDefaultBend = 12;
     int fRpnMsb = 127, fRpnLsb = 127, fLfoVoice = -1;
     unsigned fAge = 0;
+    uint64_t fNow = 0, fCtlHiAt = 0, fCtlLoAt = 0;
+    int fCtlHi = -1, fCtlLo = -1, fLastOn = -1;
 };

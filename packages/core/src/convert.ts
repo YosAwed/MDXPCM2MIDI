@@ -38,6 +38,8 @@ export interface ConvertOptions {
    *  their notes transposed down an octave, because VOPM does not reproduce MUL=0 as x0.5
    *  (bass voices then sound an octave too high). Default true in VOPM mode. */
   vopmMul0Fix?: boolean;
+  /** opm68: send portamento as OPM68 control notes (keys 0-13) instead of pitch bend (default true). */
+  opm68PortaNotes?: boolean;
   pcmMode?: PcmMode;            // 'sf2': keys map to generated SoundFont; 'gm': GM drum map (default 'gm')
   bendRange?: number;           // semitones (default 12)
   ticksPerClock?: number;       // MIDI ticks per MDX clock (default 10 -> 480 PPQN)
@@ -103,7 +105,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   const pcmMode = options.pcmMode ?? 'gm';
   const bendRange = options.bendRange ?? 12;
   const S = options.ticksPerClock ?? 10;
-  const seq = sequence(mdx, { loops });
+  const seq = sequence(mdx, { loops, portaEvents: options.fmMode === 'opm68' && options.opm68PortaNotes !== false });
   const fmMode = options.fmMode ?? 'gm';
   const usedVoices = seq.events.filter((e) => e.type === 'voice' && seq.usedChannels[e.ch]).map((e) => (e as { voice: number }).voice).filter((v) => mdx.voices.has(v));
   const slotMap = assignOpmSlots(usedVoices.length ? usedVoices : [...mdx.voices.keys()]);
@@ -350,6 +352,19 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
         const v = [64, 0, 127, 64][e.pan];
         cc(tr, e.ch, T, mc, 10, v);
         cc(tr, e.ch, T, mc, 11, e.pan === 0 ? 0 : 127);
+        break;
+      }
+      case 'porta': {
+        // OPM68 control notes (keys 0-13): see plugin/opm68/OpmEngine.hpp
+        const us = tempos.length ? tempos[tempos.length - 1].us : 12288 * (256 - 200);
+        const rate = (e.perTick / 16384) / (us / 48 / 1e6); // semitones per second
+        const v = Math.max(0, Math.min(889 * 889 - 1, Math.round(rate * 1000) + 395160));
+        const hi = Math.floor(v / 889), lo = v % 889;
+        for (const [base, x] of [[0, hi], [7, lo]] as const) {
+          const key = base + Math.floor(x / 127), vel = (x % 127) + 1;
+          tr.add(T, [0x90 | mc, key, vel], 5);
+          tr.add(T + Math.max(1, S >> 1), [0x80 | mc, key, 0], 2);
+        }
         break;
       }
       case 'pitch': {

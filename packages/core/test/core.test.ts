@@ -136,3 +136,21 @@ describe('VOPM MUL=0 fix', () => {
     expect(n2[0]).toBe(0x20 + 15);
   });
 });
+
+describe('OPM68 portamento control notes', () => {
+  it('sends portamento as control notes (keys 0-13) instead of pitch bend', () => {
+    const src = mdx([0xfd, 0x00, 0xf2, 0x04, 0x00, 0xa0, 47, 0xf1, 0]);
+    const r = convert(src, null, { fmMode: 'opm68' });
+    const a = Array.from(r.midi);
+    const ctl = a.map((b, k) => (b === 0x90 && a[k + 1] < 14 ? [a[k + 1], a[k + 2]] : null)).filter((x): x is number[] => !!x);
+    expect(ctl).toHaveLength(2);
+    const val = (k: number, v: number) => (k % 7) * 127 + v - 1;
+    const hi = ctl.find((c) => c[0] < 7)!, lo = ctl.find((c) => c[0] >= 7)!;
+    const rate = (val(hi[0], hi[1]) * 889 + val(lo[0], lo[1]) - 395160) / 1000;
+    expect(rate).toBeCloseTo(1 / 16 / (12288 * 56 / 48 / 1e6), 2); // 1/16 semitone per clock at tempo 200
+    // with control notes off, the portamento comes back as pitch-bend messages
+    const r2 = convert(src, null, { fmMode: 'opm68', opm68PortaNotes: false });
+    const bends = (m: Uint8Array) => Array.from(m).filter((b) => b === 0xe0).length;
+    expect(bends(r2.midi)).toBeGreaterThan(bends(r.midi) + 5);
+  });
+});
