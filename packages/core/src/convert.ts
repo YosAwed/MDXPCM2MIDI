@@ -21,6 +21,10 @@ export interface ConvertOptions {
    * 'cc7' (default for gm): channel volume. 'velocity': note-on velocity.
    */
   volumeMode?: 'cc7' | 'velocity' | 'bake';
+  /** VOPM: send NRPN to set the OPM clock to 4 MHz like the X68000 (default true) */
+  vopmClock4MHz?: boolean;
+  /** VOPM: keep VOPM's built-in lowpass filter on (default false = off, closer to the X68000) */
+  vopmLowpass?: boolean;
   pcmMode?: PcmMode;            // 'sf2': keys map to generated SoundFont; 'gm': GM drum map (default 'gm')
   bendRange?: number;           // semitones (default 12)
   ticksPerClock?: number;       // MIDI ticks per MDX clock (default 10 -> 480 PPQN)
@@ -187,6 +191,12 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
       // RPN pitch bend range
       if (ch < 8) tr.add(0, [0xb0 | mc, 101, 0, 0xb0 | mc, 100, 0, 0xb0 | mc, 6, bendRange, 0xb0 | mc, 38, 0], 1);
       if (bake && ch < 8) tr.add(0, [0xb0 | mc, 7, 127], 1); // volume lives in the voices
+      if (fmMode === 'vopm' && ch < 8) {
+        // VOPM NRPN #0 = OPM clock (112+ -> 4 MHz), #2 = lowpass filter (0-63 off). Sent before the RPN.
+        const clk = options.vopmClock4MHz === false ? 0 : 127;
+        const lpf = options.vopmLowpass ? 127 : 0;
+        tr.add(0, [0xb0 | mc, 99, 0, 0xb0 | mc, 98, 0, 0xb0 | mc, 6, clk, 0xb0 | mc, 99, 0, 0xb0 | mc, 98, 2, 0xb0 | mc, 6, lpf], 0);
+      }
       if (ch >= 8 && pcmMode === 'sf2' && mc !== 9) tr.add(0, [0xb0 | mc, 0, PDX_SF2_BANK_MELODIC, 0xb0 | mc, 32, 0, 0xc0 | mc, 0], 1);
       tr.add(0, [0xb0 | mc, 11, 127], 1); lastCc.set(`${ch}:11`, 127);
       tracks.set(ch, tr);
