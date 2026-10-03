@@ -49,20 +49,3 @@ node corpus.mjs summary out.jsonl
 | L ループ, [ ]255 | 指定回数展開、任意で終端フェード (CC11) |
 
 既知の制限: LZX 圧縮 MDX は未対応 / FM 音色の再現は GM 近似 / 振幅 LFO と OPM ハード LFO は無視 / 0xE0–0xE6 の独自拡張コマンドは非対応。
-
-## デプロイ (Cloudflare Pages)
-
-1. Cloudflare ダッシュボード → Workers & Pages → Create → Pages → **Connect to Git** で `YosAwed/MDXPCM2MIDI` を選択
-2. ビルド設定
-   - Framework preset: None
-   - Build command: `pnpm install --frozen-lockfile && pnpm --filter web build`
-   - Build output directory: `apps/web/dist`
-   - 環境変数: `NODE_VERSION=22`
-3. 以降 `main` への push で本番、その他のブランチはプレビューに自動デプロイ
-
-### 公開前のアクセス制限 (Cloudflare Access)
-
-1. Zero Trust → Access → Applications → Add an application → **Self-hosted**
-2. ドメインに `mdxpcm2midi.pages.dev` (とプレビュー用 `*.mdxpcm2midi.pages.dev`) を指定
-3. Policy: Action = Allow, Include = Emails (許可するメールアドレス) — ワンタイム PIN でログイン
-4. 一般公開するときはこの Application を削除し、`apps/web/public/_headers` の `X-Robots-Tag: noindex` を外す
