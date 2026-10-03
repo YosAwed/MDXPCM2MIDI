@@ -1,0 +1,7 @@
+node_modules
+dist
+.wrangler
+corpus-report*
+*.mid
+*.sf2
+!packages/core/test/fixtures/**

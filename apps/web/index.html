@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MDX → MIDI コンバータ</title>
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <h1>MDX <span class="arrow">→</span> MIDI</h1>
+      <p class="lead">X68000 の MDX (MXDRV) を Standard MIDI File に変換します。PDX を一緒に読み込むと、ADPCM パートを鳴らす SoundFont (.sf2) も作ります。ファイルはブラウザ内で処理され、サーバには送信されません。</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <label id="drop" class="drop" tabindex="0">
+      <input id="file" type="file" multiple accept=".mdx,.pdx,.MDX,.PDX" hidden />
+      <strong>MDX / PDX ファイルをここにドロップ</strong>
+      <span>またはクリックして選択(複数可・フォルダごとドロップも可)</span>
+    </label>
+
+    <details class="opts" open>
+      <summary>変換オプション</summary>
+      <div class="grid">
+        <label>ループ回数 <input id="loops" type="number" min="1" max="8" value="2" /></label>
+        <label>終端フェード(秒) <input id="fade" type="number" min="0" max="30" step="1" value="8" /></label>
+        <label>ADPCM の扱い
+          <select id="pcmMode">
+            <option value="auto">自動 (PDX があれば SF2)</option>
+            <option value="sf2">PDX → SF2 (原音)</option>
+            <option value="gm">GM ドラムに割り当て</option>
+          </select>
+        </label>
+        <label>ピッチベンド幅(半音) <input id="bend" type="number" min="1" max="24" value="12" /></label>
+      </div>
+    </details>
+
+    <section id="list" class="list" aria-live="polite"></section>
+
+    <div class="actions">
+      <button id="convertAll" disabled>すべて変換</button>
+      <button id="zipAll" disabled class="secondary">ZIP でまとめてダウンロード</button>
+      <button id="clear" class="ghost">クリア</button>
+    </div>
+
+    <section class="help">
+      <h2>使い方メモ</h2>
+      <ul>
+        <li>MIDI は FM 8ch を MIDI ch1–8 に、ADPCM (PCM8 時は最大 8ch) を ch10 と ch9・11–16 に割り当てます。</li>
+        <li>SF2 モードでは、ch10 は SF2 のドラムキット (bank 128)、それ以外の ADPCM ch は bank 127 / program 0 を使います。GM 音源用の SoundFont と一緒に読み込んで再生してください。</li>
+        <li>FM 音色は GM 音色に近似して割り当てます(音色の完全再現はできません)。</li>
+        <li>LZX 圧縮された MDX には未対応です。</li>
+      </ul>
+    </section>
+  </main>
+  <footer class="wrap foot">MDXPCM2MIDI · <span id="ver"></span></footer>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

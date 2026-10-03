@@ -1,0 +1,12 @@
+{
+  "name": "mdxpcm2midi",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "dev": "pnpm --filter web dev",
+    "cli": "node packages/core/dist/cli.mjs"
+  },
+  "packageManager": "pnpm@10.28.0"
+}
