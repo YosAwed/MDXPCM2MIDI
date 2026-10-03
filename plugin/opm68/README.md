@@ -15,7 +15,8 @@ MDXPCM2MIDI の出力を X68000 と同じ YM2151 で鳴らすためのプラグ�
 1. `OPM68.vst3` を `C:\Program Files\Common Files\VST3\` に、`OPM68.clap` を `C:\Program Files\Common Files\CLAP\` にコピー
 2. MDXPCM2MIDI で「FM 音色: OPM68 プラグイン用」を選んで変換 (`.mid` / `.opm` / `.sf2`)
 3. `.mid` を読み込み、FM 8 チャンネルそれぞれの音源を OPM68 に差し替え、「Load .OPM...」で `.opm` を読み込む
-4. ADPCM (ch10) は `.sf2` を SoundFont プレーヤーで鳴らす
+4. 各 OPM68 チャンネルの「ピッチ RANGE」を 48 にし、プラグイン設定の「Send pitch bend range」をオンにする。ポルタメント・ディチューン・ビブラートはピッチベンドで送っているため、RANGE が既定の 2 のままだと音程の動きが小さく切られる
+5. ADPCM (ch10) は `.sf2` を SoundFont プレーヤーで鳴らす
 
 ## ビルド
 ```sh

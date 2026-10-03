@@ -36,6 +36,10 @@ export function formatReport(r: ConvertResult, opts: ReportOptions = {}): string
       L.push('FM の各トラックはすべて MIDI ch1 で出力しています。トラックごとに VOPM を 1 つずつ割り当ててください。');
       L.push('');
     }
+    if (opm68) {
+      L.push('FL Studio では各 OPM68 チャンネルの「ピッチ RANGE」を 48 にし、「Send pitch bend range」をオンにしてください(ポルタメント等はピッチベンドで出力しています)。');
+      L.push('');
+    }
     L.push('| MIDI ch | MDX ch | 読み込む .opm |');
     L.push('|---|---|---|');
     for (const c of r.channels.filter((c) => c.kind === 'FM')) {
