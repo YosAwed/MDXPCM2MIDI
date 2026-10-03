@@ -38,7 +38,7 @@ export interface ConvertOptions {
    *  their notes transposed down an octave, because VOPM does not reproduce MUL=0 as x0.5
    *  (bass voices then sound an octave too high). Default true in VOPM mode. */
   vopmMul0Fix?: boolean;
-  /** opm68: send portamento / detune / pitch LFO as OPM68 control notes (keys 0-11) instead of pitch bend (default true). */
+  /** opm68: send portamento / detune / pitch LFO as OPM68 control notes (keys 0-13) instead of pitch bend (default true). */
   opm68PortaNotes?: boolean;
   pcmMode?: PcmMode;            // 'sf2': keys map to generated SoundFont; 'gm': GM drum map (default 'gm')
   bendRange?: number;           // semitones (default 12)
@@ -245,6 +245,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   const ccFromAtt = (att: number) => Math.max(0, Math.min(127, Math.round(127 * Math.pow(10, (-0.75 * att) / 40))));
 
   let fadeStart: number | null = null;
+  const nativePitch = fmMode === 'opm68' && options.opm68PortaNotes !== false;
   const chVel = new Map<number, number>();
   for (const e of seq.events) {
     const T = e.t * S;
@@ -253,6 +254,14 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
         if (tempos.length && tempos[tempos.length - 1].us === 12288 * (256 - e.timerB)) continue;
         const us = 12288 * (256 - e.timerB);
         tempos.push({ t: e.t, us });
+        // OPM68 steps portamento and the pitch LFO per MDX clock: tell it the new clock length
+        if (nativePitch) for (let ch = 0; ch < 8; ch++) {
+          if (!seq.usedChannels[ch]) continue;
+          const v = Math.max(0, Math.min(16128, Math.round(us / 48 / 4)));
+          const tr = trackFor(ch), mc = midiChOf(ch);
+          tr.add(T, [0x90 | mc, 12, Math.floor(v / 127) + 1], 5); tr.add(T + Math.max(1, S >> 1), [0x80 | mc, 12, 0], 2);
+          tr.add(T, [0x90 | mc, 13, (v % 127) + 1], 5); tr.add(T + Math.max(1, S >> 1), [0x80 | mc, 13, 0], 2);
+        }
         conductor.meta(T, 0x51, [(us >> 16) & 255, (us >> 8) & 255, us & 255], 1);
       } else if (e.type === 'loopPoint') {
         conductor.text(T, 0x06, 'loopStart');
@@ -355,7 +364,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
         break;
       }
       case 'porta': case 'retrig': case 'detune': case 'lfo': {
-        // OPM68 control notes (keys 0-11, see plugin/opm68/OpmEngine.hpp)
+        // OPM68 control notes (keys 0-13, see plugin/opm68/OpmEngine.hpp)
         const us = tempos.length ? tempos[tempos.length - 1].us : 12288 * (256 - 200);
         const tickSec = us / 48 / 1e6;
         const ctl = (key: number, v7: number) => {
@@ -372,9 +381,9 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
           const wave = !e.on ? 0 : e.wave <= 2 ? e.wave + 1 : 4;
           ctl(4, wave);
           if (e.on) {
-            ctl14(5, e.period * tickSec * 2000);
+            ctl14(5, e.period);
             ctl14(7, 8064 + (e.amp / 16384) * (e.period / 2) * 256);
-            ctl14(9, e.delay * tickSec * 2000);
+            ctl14(9, e.delay);
           }
         }
         break;

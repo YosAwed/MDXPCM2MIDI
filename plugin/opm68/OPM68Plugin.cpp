@@ -16,7 +16,7 @@ protected:
     const char* getMaker() const override { return "MDXPCM2MIDI"; }
     const char* getHomePage() const override { return "https://github.com/YosAwed/MDXPCM2MIDI"; }
     const char* getLicense() const override { return "BSD-3-Clause"; }
-    uint32_t getVersion() const override { return d_version(0, 3, 0); }
+    uint32_t getVersion() const override { return d_version(0, 4, 0); }
 
     void initParameter(uint32_t index, Parameter& p) override
     {

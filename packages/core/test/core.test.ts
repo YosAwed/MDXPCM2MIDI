@@ -138,7 +138,7 @@ describe('VOPM MUL=0 fix', () => {
 });
 
 describe('OPM68 pitch control notes', () => {
-  const ctls = (m: Uint8Array) => { const a = Array.from(m); return a.map((b, k) => (b === 0x90 && a[k + 1] < 12 ? [a[k + 1], a[k + 2] - 1] : null)).filter((x): x is number[] => !!x); };
+  const ctls = (m: Uint8Array) => { const a = Array.from(m); return a.map((b, k) => (b === 0x90 && a[k + 1] < 14 ? [a[k + 1], a[k + 2] - 1] : null)).filter((x): x is number[] => !!x); };
   const v14 = (c: number[][], k: number) => c.find((x) => x[0] === k)![1] * 127 + c.find((x) => x[0] === k + 1)![1];
   const tick = 12288 * 56 / 48 / 1e6; // tempo 200
   it('sends portamento as control notes 0/1 instead of pitch bend', () => {
@@ -150,12 +150,13 @@ describe('OPM68 pitch control notes', () => {
   });
   it('sends detune and pitch LFO parameters', () => {
     // F3 detune +32 (half a semitone), EC triangle period 8 amp 0x200, E9 delay 4
-    const src = mdx([0xfd, 0x00, 0xf3, 0x00, 0x20, 0xec, 0x02, 0x00, 0x08, 0x02, 0x00, 0xe9, 4, 0xa0, 47, 0xf1, 0]);
+    const src = mdx([0xff, 200, 0xfd, 0x00, 0xf3, 0x00, 0x20, 0xec, 0x02, 0x00, 0x08, 0x02, 0x00, 0xe9, 4, 0xa0, 47, 0xf1, 0]);
     const c = ctls(convert(src, null, { fmMode: 'opm68' }).midi);
     expect((v14(c, 2) - 8064) / 64).toBe(0.5);
     expect(c.find((x) => x[0] === 4)![1]).toBe(3);
-    expect(v14(c, 5) / 2000).toBeCloseTo(8 * tick, 3);
+    expect(v14(c, 5)).toBe(8);
+    expect(v14(c, 12) * 4e-6).toBeCloseTo(tick, 4);
     expect((v14(c, 7) - 8064) / 256).toBeCloseTo((0x200 / 16384) * 4, 2);
-    expect(v14(c, 9) / 2000).toBeCloseTo(4 * tick, 3);
+    expect(v14(c, 9)).toBe(4);
   });
 });

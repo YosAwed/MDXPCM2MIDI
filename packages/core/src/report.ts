@@ -37,7 +37,7 @@ export function formatReport(r: ConvertResult, opts: ReportOptions = {}): string
       L.push('');
     }
     if (opm68) {
-      L.push('ポルタメント・ディチューン・ビブラートはピアノロール最下部 (ノート 0〜11) の短い制御ノートで OPM68 に送っています。消さないでください(DAW のピッチ幅の設定は不要です)。');
+      L.push('ポルタメント・ディチューン・ビブラートはピアノロール最下部 (ノート 0〜13) の短い制御ノートで OPM68 に送っています。消さないでください(DAW のピッチ幅の設定は不要です)。');
       L.push('');
     }
     L.push('| MIDI ch | MDX ch | 読み込む .opm |');
