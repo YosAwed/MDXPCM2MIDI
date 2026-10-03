@@ -4,6 +4,7 @@ export * from './convert.js';
 export * from './pdx.js';
 export * from './sf2.js';
 export * from './gm.js';
+export * from './opm.js';
 export { writeSmf, Track } from './smf.js';
 
 import { convertMdx, PDX_SF2_BANK_MELODIC, type ConvertOptions, type ConvertResult } from './convert.js';

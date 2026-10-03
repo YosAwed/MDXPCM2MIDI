@@ -34,6 +34,18 @@
             <option value="gm">GM ドラムに割り当て</option>
           </select>
         </label>
+        <label>FM 音色
+          <select id="fmMode">
+            <option value="gm">GM 音色に近似</option>
+            <option value="vopm">VOPM 用 (.OPM 音色バンクを出力)</option>
+          </select>
+        </label>
+        <label>音量の表現
+          <select id="volumeMode">
+            <option value="cc7">CC7 (チャンネルボリューム)</option>
+            <option value="velocity">ベロシティ</option>
+          </select>
+        </label>
         <label>ピッチベンド幅(半音) <input id="bend" type="number" min="1" max="24" value="12" /></label>
       </div>
     </details>
@@ -52,6 +64,7 @@
         <li>MIDI は FM 8ch を MIDI ch1–8 に、ADPCM (PCM8 時は最大 8ch) を ch10 と ch9・11–16 に割り当てます。</li>
         <li>SF2 モードでは、ch10 は SF2 のドラムキット (bank 128)、それ以外の ADPCM ch は bank 127 / program 0 を使います。GM 音源用の SoundFont と一緒に読み込んで再生してください。</li>
         <li>FM 音色は GM 音色に近似して割り当てます(音色の完全再現はできません)。</li>
+        <li>VOPM モード: MDX の FM 音色を VOPM 用の .OPM バンクとして書き出し、MIDI のプログラムチェンジをバンク内の番号(原則 MDX の @番号そのまま)にします。DAW で VOPM を 8 つ立ち上げ、それぞれに .OPM を読み込んで MIDI ch1〜8 を割り当ててください。</li>
         <li>LZX 圧縮された MDX には未対応です。</li>
       </ul>
     </section>

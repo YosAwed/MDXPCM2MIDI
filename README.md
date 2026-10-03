@@ -23,7 +23,7 @@ pnpm install
 pnpm test                      # ユニットテスト
 pnpm dev                       # http://localhost:5173
 pnpm build                     # apps/web/dist を生成
-node packages/core/dist/cli.mjs song.mdx [-p song.pdx] [--loops 2] [--fade 8] [--gm]
+node packages/core/dist/cli.mjs song.mdx [-p song.pdx] [--loops 2] [--fade 8] [--gm] [--vopm]
 ```
 
 コーパステスト (手元の MDX 群で実行):
@@ -47,6 +47,16 @@ node corpus.mjs summary out.jsonl
 | D (デチューン) / _ (ポルタメント) / MP (ピッチ LFO) | ピッチベンド (RPN で幅を設定、既定 ±12) |
 | q / @q / & | ゲートタイム・タイ / スラー |
 | L ループ, [ ]255 | 指定回数展開、任意で終端フェード (CC11) |
+
+### VOPM モード (`fmMode: 'vopm'` / CLI `--vopm`)
+
+- MDX の FM 音色を VOPM / MiOPMdrv 形式の `.opm` バンク (128 スロット) に書き出します。オペレータは `.opm` の M1, C1, M2, C2 順に並べ替えます。
+- プログラムチェンジは `.opm` のスロット番号です。使用音色がすべて @0–127 なら MDX の @番号と同じ、それ以外は使用順に詰めます。
+- 曲中で最初に出てくる OPM ハード LFO 設定 (EA) を各音色の `LFO:` / `CH: AMS PMS` に書き込みます。
+- 未定義の @番号は MXDRV と同様に無視します (直前の音色のまま)。
+- 音量は CC7 (既定) またはベロシティで出力できます。
+- DAW では VOPM を 8 インスタンス立ち上げ、それぞれに `.opm` を読み込んで MIDI ch1–8 を割り当てます。ADPCM は `.sf2` を SoundFont プレーヤーで鳴らします。
+- `tools/opmrender` は ymfm で `.mid` + `.opm` を描画する試聴用ツールです。
 
 既知の制限: LZX 圧縮 MDX は未対応 / FM 音色の再現は GM 近似 / 振幅 LFO と OPM ハード LFO は無視 / 0xE0–0xE6 の独自拡張コマンドは非対応。
 

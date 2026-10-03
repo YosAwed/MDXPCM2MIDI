@@ -18,6 +18,8 @@ export type SeqEvent =
 /** Information attached to ADPCM note-ons. */
 export interface PcmKey { bank: number; sample: number; freq: number }
 
+export interface OpmLfo { wave: number; sync: number; lfrq: number; pmd: number; amd: number; pms: number; ams: number }
+
 export interface SeqOptions {
   loops?: number;       // how many times looping channels should play the loop body (default 2)
   maxTicks?: number;    // safety cap
@@ -28,6 +30,7 @@ export interface SeqResult {
   endTick: number;
   loopTick: number | null;  // tick where first loop started (for the longest loop channel)
   warnings: string[];
+  opmLfo: OpmLfo | null;    // first OPM hardware LFO setting (EA) found in the song
   pcmKeys: PcmKey[];        // distinct ADPCM (bank,sample,freq) used; noteOn.key indexes into this for PCM channels
   isPcm: boolean[];
   usedChannels: boolean[];
@@ -93,6 +96,7 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
 
   let t = 0;
   let loopTick: number | null = null;
+  let opmLfo: OpmLfo | null = null;
   const u8 = (p: number) => (p < d.length ? d[p] : 0xf1);
   const s16 = (p: number) => { const v = (u8(p) << 8) | u8(p + 1); return v & 0x8000 ? v - 0x10000 : v; };
 
@@ -246,9 +250,11 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
           const m = u8(p + 1);
           c.pos = (m === 0x80 || m === 0x81) ? p + 2 : p + 6; break;
         }
-        case 0xea: { // OPM hardware LFO
+        case 0xea: { // OPM hardware LFO: EA wave LFRQ PMD AMD PMS/AMS
           const m = u8(p + 1);
-          c.pos = (m === 0x80 || m === 0x81) ? p + 2 : p + 6; break;
+          if (m === 0x80 || m === 0x81) { c.pos = p + 2; break; }
+          if (!opmLfo) opmLfo = { wave: m & 3, sync: (m >> 6) & 1, lfrq: u8(p + 2), pmd: u8(p + 3) & 0x7f, amd: u8(p + 4) & 0x7f, pms: (u8(p + 5) >> 4) & 7, ams: u8(p + 5) & 3 };
+          c.pos = p + 6; break;
         }
         case 0xe9: c.lfo.delay = u8(p + 1); c.pos = p + 2; break;
         case 0xe8: c.pos = p + 1; break; // PCM8 mode enable
@@ -314,5 +320,5 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
   for (const c of chs) keyOff(c, t);
   if (loopTick !== null) events.push({ t: loopTick, ch: -1, type: 'loopPoint' });
   events.sort((a, b) => a.t - b.t);
-  return { events, endTick: t, loopTick, warnings, pcmKeys, isPcm, usedChannels: used };
+  return { events, endTick: t, loopTick, warnings, opmLfo, pcmKeys, isPcm, usedChannels: used };
 }

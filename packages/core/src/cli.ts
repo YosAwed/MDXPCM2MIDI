@@ -4,10 +4,10 @@ import { convert } from './index.js';
 
 const args = process.argv.slice(2);
 if (!args.length || args.includes('-h')) {
-  console.log('usage: mdx2mid <file.mdx> [-p file.pdx] [-o out.mid] [--loops N] [--fade SEC] [--gm] [--json]');
+  console.log('usage: mdx2mid <file.mdx> [-p file.pdx] [-o out.mid] [--loops N] [--fade SEC] [--gm] [--vopm] [--json]');
   process.exit(0);
 }
-let input = '', pdxPath = '', out = '', loops = 2, fade = 0, gm = false, json = false, noPdx = false;
+let input = '', pdxPath = '', out = '', loops = 2, fade = 0, gm = false, json = false, noPdx = false, vopm = false;
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '-p') pdxPath = args[++i];
@@ -15,6 +15,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--loops') loops = +args[++i];
   else if (a === '--fade') fade = +args[++i];
   else if (a === '--gm') gm = true;
+  else if (a === '--vopm') vopm = true;
   else if (a === '--no-pdx') noPdx = true;
   else if (a === '--json') json = true;
   else input = a;
@@ -37,7 +38,7 @@ try {
   const head = convert(mdxBuf, null, { loops, fadeSeconds: fade, pcmMode: 'gm' });
   if (!pdxPath && !noPdx && !gm) pdxPath = findPdx(head.pdxName);
   const pdxBuf = pdxPath ? new Uint8Array(readFileSync(pdxPath)) : null;
-  res = convert(mdxBuf, pdxBuf, { loops, fadeSeconds: fade, pcmMode: gm || !pdxBuf ? 'gm' : 'sf2' });
+  res = convert(mdxBuf, pdxBuf, { loops, fadeSeconds: fade, pcmMode: gm || !pdxBuf ? 'gm' : 'sf2', fmMode: vopm ? 'vopm' : 'gm' });
 } catch (e) {
   if (json) console.log(JSON.stringify({ file: input, ok: false, error: String((e as Error).message) }));
   else console.error(`${input}: ${(e as Error).message}`);
@@ -47,6 +48,7 @@ if (!out) out = join(dirname(input), basename(input, extname(input)) + '.mid');
 if (!json) {
   writeFileSync(out, res.midi);
   if (res.sf2) writeFileSync(out.replace(/\.mid$/i, '.sf2'), res.sf2);
+  if (vopm) writeFileSync(out.replace(/\.mid$/i, '.opm'), res.opmBank);
 }
 const info = {
   file: input, ok: true, title: res.title, pdx: res.pdxName, pdxFound: pdxPath || null, pcm8: res.pcm8,

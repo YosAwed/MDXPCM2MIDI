@@ -10,6 +10,7 @@ export type WorkerRes =
   | {
       id: number; ok: true; kind: 'convert'; midi: Uint8Array; sf2: Uint8Array | null; durationSec: number;
       loopSec: number | null; warnings: string[]; channels: string[]; pcmKeys: number; programs: Record<number, number>;
+      opmBank: string | null; opmVoices: number;
     }
   | { id: number; ok: false; error: string };
 
@@ -25,6 +26,7 @@ self.onmessage = (ev: MessageEvent<WorkerReq>) => {
       post({
         id: req.id, ok: true, kind: 'convert', midi: r.midi, sf2: r.sf2, durationSec: r.durationSec, loopSec: r.loopSec,
         warnings: r.warnings, channels: r.usedChannels, pcmKeys: r.pcmKeys.length, programs: r.programs,
+        opmBank: req.options.fmMode === 'vopm' ? r.opmBank : null, opmVoices: Object.keys(r.opmSlots).length,
       }, transfer);
     }
   } catch (e) {

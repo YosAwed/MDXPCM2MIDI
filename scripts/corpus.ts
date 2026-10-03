@@ -8,6 +8,23 @@ import { convert } from '../packages/core/src/index.js';
 
 const [mode, a1, a2, a3, a4] = process.argv.slice(2);
 
+const RANGES = [31, 31, 31, 15, 15, 127, 3, 15, 7, 3, 128];
+function checkOpm(txt: string): string | null {
+  const L = txt.split('\r\n');
+  let voices = 0;
+  for (let i = 0; i < L.length; i++) {
+    if (!L[i].startsWith('@:')) continue;
+    voices++;
+    if (!L[i + 1].startsWith('LFO:') || !L[i + 2].startsWith('CH:')) return `bad header @${i}`;
+    for (let k = 0; k < 4; k++) {
+      const ln = L[i + 3 + k], nums = ln.slice(3).trim().split(/\s+/).map(Number);
+      if (ln.slice(0, 3) !== ['M1:', 'C1:', 'M2:', 'C2:'][k] || nums.length !== 11) return `bad op line ${ln}`;
+      if (nums.some((n, j) => !(n >= 0 && n <= RANGES[j]))) return `out of range ${ln}`;
+    }
+  }
+  return voices === 128 ? null : `voices=${voices}`;
+}
+
 if (mode === 'list') {
   const files: string[] = [];
   const walk = (d: string) => {
@@ -46,7 +63,10 @@ if (mode === 'list') {
         rec.pdx = hit ? 1 : 0;
         if (hit) pdx = new Uint8Array(readFileSync(hit));
       }
-      const r = pdx ? convert(buf, pdx, { loops: 2 }) : head;
+      const r = convert(buf, pdx, { loops: 2, fmMode: 'vopm' });
+      const bad = checkOpm(r.opmBank);
+      if (bad) r.warnings.push(`OPM: ${bad}`);
+      if (r.warnings.some((w) => w.includes('定義されていません'))) rec.undefVoice = 1;
       Object.assign(rec, { ok: 1, pcm8: r.pcm8 ? 1 : 0, dur: Math.round(r.durationSec), loop: r.loopSec !== null ? 1 : 0, w: r.warnings });
     } catch (e) { rec.ok = 0; rec.err = String((e as Error).message).slice(0, 120); }
     out.push(JSON.stringify(rec));
