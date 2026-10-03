@@ -107,3 +107,18 @@ describe('opm bank', () => {
     expect(s.includes('192,0')).toBe(true);
   });
 });
+
+describe('volume baking (vopm)', () => {
+  it('adds MXDRV volume attenuation to carrier TLs and switches programs per volume', () => {
+    // voice 0 is CON=2 (carrier C2 only). v15 (att 2) then v0 (att 0x2a)
+    const r = convert(mdx([0xfd, 0x00, 0xfb, 15, 0xa0, 47, 0xfb, 0, 0xa0, 47, 0xf1, 0]), null, { fmMode: 'vopm' });
+    expect(r.opmBanks).toHaveLength(1);
+    const L = r.opmBanks[0].text.split('\r\n');
+    const tlOf = (slot: number, op: string) => +L[L.findIndex((l) => l.startsWith(`@:${slot} `)) + ({ M1: 3, C1: 4, M2: 5, C2: 6 } as Record<string, number>)[op]].trim().split(/\s+/)[6];
+    expect(tlOf(0, 'C2')).toBe(2);
+    expect(tlOf(1, 'C2')).toBe(0x2a);
+    expect(tlOf(1, 'M1')).toBe(0); // modulators untouched
+    const progs = Array.from(r.midi).map((b, i, a) => (b === 0xc0 ? a[i + 1] : -1)).filter((x) => x >= 0);
+    expect(progs).toEqual([0, 1]);
+  });
+});

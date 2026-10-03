@@ -97,7 +97,7 @@ function options(it: Item): ConvertOptions {
     fadeSeconds: +$<HTMLInputElement>('fade').value || 0,
     bendRange: +$<HTMLInputElement>('bend').value || 12,
     fmMode: $<HTMLSelectElement>('fmMode').value === 'vopm' ? 'vopm' : 'gm',
-    volumeMode: $<HTMLSelectElement>('volumeMode').value === 'velocity' ? 'velocity' : 'cc7',
+    volumeMode: (() => { const v = $<HTMLSelectElement>('volumeMode').value; return v === 'auto' ? undefined : (v as 'cc7' | 'velocity' | 'bake'); })(),
     pcmMode: mode === 'gm' ? 'gm' : mode === 'sf2' ? (hasPdx ? 'sf2' : 'gm') : hasPdx ? 'sf2' : 'gm',
   };
 }
@@ -132,7 +132,10 @@ async function zipAll() {
   for (const it of items) {
     if (!it.result) continue;
     files[`${base(it.file)}.mid`] = it.result.midi;
-    if (it.result.opmBank) files[`${base(it.file)}.opm`] = new TextEncoder().encode(it.result.opmBank);
+    for (const b of it.result.opmBanks ?? []) {
+      const n = it.result.opmBanks!.length === 1 ? `${base(it.file)}.opm` : `${base(it.file)}_ch${b.label}.opm`;
+      files[n] = new TextEncoder().encode(b.text);
+    }
     if (it.result.sf2) {
       // one SoundFont per song (keys depend on the song's sample usage)
       const n = `${base(it.file)}.sf2`;
@@ -164,7 +167,7 @@ function render() {
       const meta = r ? `<span>${fmt(r.durationSec)}${r.loopSec !== null ? `(ループ ${fmt(r.loopSec)}〜)` : ''}</span><span>ch ${r.channels.join('')}</span>` : '';
       const warns = r?.warnings.length ? `<details class="warns"><summary>警告 ${r.warnings.length} 件</summary><ul>${r.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></details>` : '';
       const btns = it.status === 'done' && r
-        ? `<button data-dl="mid" data-id="${it.id}">.mid</button>${r.sf2 ? `<button data-dl="sf2" data-id="${it.id}" class="secondary">.sf2</button>` : ''}${r.opmBank ? `<button data-dl="opm" data-id="${it.id}" class="secondary" title="VOPM 音色バンク (${r.opmVoices} 音色)">.opm</button>` : ''}`
+        ? `<button data-dl="mid" data-id="${it.id}">.mid</button>${r.sf2 ? `<button data-dl="sf2" data-id="${it.id}" class="secondary">.sf2</button>` : ''}${r.opmBanks?.length ? `<button data-dl="opm" data-id="${it.id}" class="secondary" title="VOPM 音色バンク (${r.opmVoices} 音色)">${r.opmBanks.length > 1 ? `.opm ×${r.opmBanks.length}` : '.opm'}</button>` : ''}`
         : it.status === 'busy' ? '<span class="spin">変換中…</span>'
         : it.status === 'error' ? `<span class="err">${esc(it.error ?? 'エラー')}</span>`
         : `<button data-conv="${it.id}" class="secondary">変換</button>`;
@@ -188,7 +191,11 @@ $('list').addEventListener('click', (e) => {
     const it = items.find((i) => i.id === +(t.dataset.id ?? 0));
     if (it?.result) {
       if (dl === 'mid') download(`${base(it.file)}.mid`, it.result.midi, 'audio/midi');
-      else if (dl === 'opm' && it.result.opmBank) download(`${base(it.file)}.opm`, new TextEncoder().encode(it.result.opmBank), 'text/plain');
+      else if (dl === 'opm' && it.result.opmBanks?.length) {
+        const banks = it.result.opmBanks;
+        if (banks.length === 1) download(`${base(it.file)}.opm`, new TextEncoder().encode(banks[0].text), 'text/plain');
+        else download(`${base(it.file)}_opm.zip`, zipSync(Object.fromEntries(banks.map((b) => [`${base(it.file)}_ch${b.label}.opm`, new TextEncoder().encode(b.text)]))), 'application/zip');
+      }
       else if (dl === 'sf2' && it.result.sf2) download(`${base(it.file)}.sf2`, it.result.sf2, 'application/octet-stream');
     }
   }

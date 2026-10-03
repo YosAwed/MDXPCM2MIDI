@@ -4,7 +4,7 @@ import { parseMdx, CHANNEL_NAMES, type MdxFile, type OpmVoice } from './mdx.js';
 import { sequence, type SeqResult, type PcmKey } from './sequencer.js';
 import { Track, writeSmf } from './smf.js';
 import { defaultProgramFor, defaultDrumFor } from './gm.js';
-import { assignOpmSlots, writeOpmBank } from './opm.js';
+import { assignOpmSlots, writeOpmBank, writeOpmEntries, applyVolume, type OpmEntry } from './opm.js';
 
 export type PcmMode = 'sf2' | 'gm';
 /** 'gm': guess GM programs. 'vopm': program change = slot in the exported .OPM bank (for VOPM). */
@@ -14,7 +14,13 @@ export interface ConvertOptions {
   loops?: number;               // default 2
   fadeSeconds?: number;         // fade out at end of looping songs (default 0 = none)
   fmMode?: FmMode;              // default 'gm'
-  volumeMode?: 'cc7' | 'velocity'; // how MDX volume is expressed (default 'cc7')
+  /**
+   * How MDX volume (v / @v / ( )) is expressed on FM channels.
+   * 'bake' (default for vopm): add the attenuation to the carrier TLs inside the .OPM voices,
+   *   exactly like MXDRV, and select (voice, volume) pairs by program change.
+   * 'cc7' (default for gm): channel volume. 'velocity': note-on velocity.
+   */
+  volumeMode?: 'cc7' | 'velocity' | 'bake';
   pcmMode?: PcmMode;            // 'sf2': keys map to generated SoundFont; 'gm': GM drum map (default 'gm')
   bendRange?: number;           // semitones (default 12)
   ticksPerClock?: number;       // MIDI ticks per MDX clock (default 10 -> 480 PPQN)
@@ -36,7 +42,9 @@ export interface ConvertResult {
   voices: OpmVoice[];
   programs: Record<number, number>;
   opmBank: string;              // VOPM/MiOPMdrv .OPM text with the voices used by this song
-  opmSlots: Record<number, number>; // MDX voice number -> program slot in opmBank
+  opmSlots: Record<number, number>; // MDX voice number -> program slot in opmBank (not used in bake mode)
+  /** VOPM banks. One shared bank, or one per FM channel when the song needs more than 128 (voice, volume) pairs. */
+  opmBanks: { label: string; channels: string; text: string; voices: number }[];
   pcmKeys: PcmKeyAssignment[];  // for building the SoundFont (sf2 mode)
   seq: SeqResult;
 }
@@ -54,8 +62,62 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   const fmMode = options.fmMode ?? 'gm';
   const usedVoices = seq.events.filter((e) => e.type === 'voice' && seq.usedChannels[e.ch]).map((e) => (e as { voice: number }).voice).filter((v) => mdx.voices.has(v));
   const slotMap = assignOpmSlots(usedVoices.length ? usedVoices : [...mdx.voices.keys()]);
-  const opmBank = writeOpmBank(mdx.voices, { name: mdx.title, lfo: seq.opmLfo, slots: slotMap });
   const warnings = [...seq.warnings];
+  const volumeMode = options.volumeMode ?? (fmMode === 'vopm' ? 'bake' : 'cc7');
+  const bake = fmMode === 'vopm' && volumeMode === 'bake';
+  let opmBank = writeOpmBank(mdx.voices, { name: mdx.title, lfo: seq.opmLfo, slots: slotMap });
+  let opmBanks: ConvertResult['opmBanks'] = [{ label: 'all', channels: 'ABCDEFGH', text: opmBank, voices: slotMap.size }];
+
+  // --- volume baking: collect the (voice, attenuation) pairs each FM channel plays ---
+  const VOLTAB = [0x2a, 0x28, 0x25, 0x22, 0x20, 0x1d, 0x1a, 0x18, 0x15, 0x12, 0x10, 0x0d, 0x0a, 0x08, 0x05, 0x02];
+  const comboSlot: Map<string, number>[] = Array.from({ length: 8 }, () => new Map());
+  const quant = new Array(8).fill(1);
+  const qAtt = (ch: number, att: number) => Math.min(127, Math.round(att / quant[ch]) * quant[ch]);
+  if (bake) {
+    const perCh: Set<string>[] = Array.from({ length: 8 }, () => new Set());
+    const cur = Array.from({ length: 8 }, () => ({ voice: -1, att: VOLTAB[8] }));
+    const comboOrder: string[][] = Array.from({ length: 8 }, () => []);
+    const collect = () => {
+      for (const s of perCh) s.clear();
+      for (const o of comboOrder) o.length = 0;
+      for (const c of cur) { c.voice = -1; c.att = VOLTAB[8]; }
+      for (const e of seq.events) {
+        if (e.ch < 0 || e.ch >= 8) continue;
+        if (e.type === 'voice' && mdx.voices.has(e.voice)) cur[e.ch].voice = e.voice;
+        else if (e.type === 'volume') cur[e.ch].att = e.att;
+        else if (e.type === 'noteOn' && cur[e.ch].voice >= 0) {
+          const k = `${cur[e.ch].voice}:${qAtt(e.ch, cur[e.ch].att)}`;
+          if (!perCh[e.ch].has(k)) { perCh[e.ch].add(k); comboOrder[e.ch].push(k); }
+        }
+      }
+    };
+    collect();
+    // make every channel fit into 128 programs (coarser volume steps if needed)
+    for (let ch = 0; ch < 8; ch++) while (perCh[ch].size > 128 && quant[ch] < 16) { quant[ch]++; collect(); }
+    if (quant.some((q) => q > 1)) warnings.push('音量の段階が多いため一部チャンネルの音量を量子化しました');
+    const all: string[] = [];
+    for (const o of comboOrder) for (const k of o) if (!all.includes(k)) all.push(k);
+    const entryFor = (k: string, slot: number): OpmEntry => {
+      const [v, a] = k.split(':').map(Number);
+      return { slot, voice: applyVolume(mdx.voices.get(v)!, a), name: `MDX @${v} att${a}` };
+    };
+    if (all.length <= 128) {
+      all.forEach((k, i) => { for (const m of comboSlot) m.set(k, i); });
+      opmBank = writeOpmEntries(all.map(entryFor), { name: mdx.title, lfo: seq.opmLfo });
+      opmBanks = [{ label: 'all', channels: 'ABCDEFGH', text: opmBank, voices: all.length }];
+    } else {
+      opmBanks = [];
+      for (let ch = 0; ch < 8; ch++) {
+        if (!comboOrder[ch].length) continue;
+        comboOrder[ch].forEach((k, i) => comboSlot[ch].set(k, i));
+        const text = writeOpmEntries(comboOrder[ch].map(entryFor), { name: `${mdx.title} ch${CHANNEL_NAMES[ch]}`, lfo: seq.opmLfo });
+        opmBanks.push({ label: CHANNEL_NAMES[ch], channels: CHANNEL_NAMES[ch], text, voices: comboOrder[ch].length });
+      }
+      opmBank = opmBanks[0]?.text ?? opmBank;
+      warnings.push('(音色×音量)の組が128を超えたため、FMチャンネルごとに別の .opm を出力しました');
+    }
+  }
+  const bakeState = Array.from({ length: 8 }, () => ({ voice: -1, att: VOLTAB[8], prog: -1 }));
 
   // PCM key assignment
   const base = seq.pcmKeys.length <= 92 ? 36 : 0;
@@ -92,6 +154,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
       tr.text(0, 0x03, `${ch < 8 ? 'FM' : 'ADPCM'} ${CHANNEL_NAMES[ch]}`);
       // RPN pitch bend range
       if (ch < 8) tr.add(0, [0xb0 | mc, 101, 0, 0xb0 | mc, 100, 0, 0xb0 | mc, 6, bendRange, 0xb0 | mc, 38, 0], 1);
+      if (bake && ch < 8) tr.add(0, [0xb0 | mc, 7, 127], 1); // volume lives in the voices
       if (ch >= 8 && pcmMode === 'sf2' && mc !== 9) tr.add(0, [0xb0 | mc, 0, PDX_SF2_BANK_MELODIC, 0xb0 | mc, 32, 0, 0xc0 | mc, 0], 1);
       tr.add(0, [0xb0 | mc, 11, 127], 1); lastCc.set(`${ch}:11`, 127);
       tracks.set(ch, tr);
@@ -108,7 +171,6 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   const ccFromAtt = (att: number) => Math.max(0, Math.min(127, Math.round(127 * Math.pow(10, (-0.75 * att) / 40))));
 
   let fadeStart: number | null = null;
-  const volumeMode = options.volumeMode ?? 'cc7';
   const chVel = new Map<number, number>();
   for (const e of seq.events) {
     const T = e.t * S;
@@ -138,6 +200,15 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
       case 'noteOn': {
         const key = e.ch < 8 ? e.key : pcmKeys[e.key].midiKey;
         if (key < 0 || key > 127) { warnings.push(`音域外のノート ${key} を省略`); return; }
+        if (bake && e.ch < 8) {
+          const st = bakeState[e.ch];
+          if (st.voice >= 0) {
+            const slot = comboSlot[e.ch].get(`${st.voice}:${qAtt(e.ch, st.att)}`);
+            if (slot !== undefined && slot !== st.prog) { tr.add(T, [0xc0 | mc, slot], 3); st.prog = slot; }
+          }
+          tr.add(T, [0x90 | mc, key, 127], 6);
+          break;
+        }
         const vel = volumeMode === 'velocity' ? Math.max(1, chVel.get(e.ch) ?? 100) : 100;
         tr.add(T, [0x90 | mc, key, vel], 6);
         break;
@@ -155,6 +226,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
           if (!warnings.includes(w)) warnings.push(w);
           break;
         }
+        if (bake && e.ch < 8) { bakeState[e.ch].voice = e.voice; programs[e.voice] = -1; break; }
         const prog = fmMode === 'vopm'
           ? (slotMap.get(e.voice) ?? 0)
           : options.programMap?.[e.voice] ?? defaultProgramFor(mdx.voices.get(e.voice));
@@ -163,6 +235,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
         break;
       }
       case 'volume':
+        if (bake && e.ch < 8) { bakeState[e.ch].att = e.att; break; }
         if (volumeMode === 'velocity') chVel.set(e.ch, ccFromAtt(e.att));
         else cc(tr, e.ch, T, mc, 7, ccFromAtt(e.att));
         break;
@@ -213,7 +286,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
     durationSec: clockSec(endT), loopSec: seq.loopTick !== null ? clockSec(seq.loopTick) : null,
     warnings, usedChannels: [...tracks.keys()].sort((a, b) => a - b).map((c) => CHANNEL_NAMES[c]),
     voices: [...mdx.voices.values()], programs, pcmKeys, seq,
-    opmBank, opmSlots: Object.fromEntries(slotMap),
+    opmBank, opmBanks, opmSlots: Object.fromEntries(slotMap),
   };
 }
 

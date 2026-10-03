@@ -64,8 +64,8 @@ if (mode === 'list') {
         if (hit) pdx = new Uint8Array(readFileSync(hit));
       }
       const r = convert(buf, pdx, { loops: 2, fmMode: 'vopm' });
-      const bad = checkOpm(r.opmBank);
-      if (bad) r.warnings.push(`OPM: ${bad}`);
+      for (const b of r.opmBanks) { const bad = checkOpm(b.text); if (bad) r.warnings.push(`OPM: ${bad}`); }
+      rec.banks = r.opmBanks.length; rec.combos = r.opmBanks.reduce((a, b) => a + b.voices, 0);
       if (r.warnings.some((w) => w.includes('定義されていません'))) rec.undefVoice = 1;
       Object.assign(rec, { ok: 1, pcm8: r.pcm8 ? 1 : 0, dur: Math.round(r.durationSec), loop: r.loopSec !== null ? 1 : 0, w: r.warnings });
     } catch (e) { rec.ok = 0; rec.err = String((e as Error).message).slice(0, 120); }
