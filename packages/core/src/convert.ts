@@ -38,7 +38,7 @@ export interface ConvertOptions {
    *  their notes transposed down an octave, because VOPM does not reproduce MUL=0 as x0.5
    *  (bass voices then sound an octave too high). Default true in VOPM mode. */
   vopmMul0Fix?: boolean;
-  /** opm68: send portamento as OPM68 control notes (keys 0-13) instead of pitch bend (default true). */
+  /** opm68: send portamento / detune / pitch LFO as OPM68 control notes (keys 0-11) instead of pitch bend (default true). */
   opm68PortaNotes?: boolean;
   pcmMode?: PcmMode;            // 'sf2': keys map to generated SoundFont; 'gm': GM drum map (default 'gm')
   bendRange?: number;           // semitones (default 12)
@@ -105,7 +105,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   const pcmMode = options.pcmMode ?? 'gm';
   const bendRange = options.bendRange ?? 12;
   const S = options.ticksPerClock ?? 10;
-  const seq = sequence(mdx, { loops, portaEvents: options.fmMode === 'opm68' && options.opm68PortaNotes !== false });
+  const seq = sequence(mdx, { loops, nativePitch: options.fmMode === 'opm68' && options.opm68PortaNotes !== false });
   const fmMode = options.fmMode ?? 'gm';
   const usedVoices = seq.events.filter((e) => e.type === 'voice' && seq.usedChannels[e.ch]).map((e) => (e as { voice: number }).voice).filter((v) => mdx.voices.has(v));
   const slotMap = assignOpmSlots(usedVoices.length ? usedVoices : [...mdx.voices.keys()]);
@@ -354,16 +354,28 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
         cc(tr, e.ch, T, mc, 11, e.pan === 0 ? 0 : 127);
         break;
       }
-      case 'porta': {
-        // OPM68 control notes (keys 0-13): see plugin/opm68/OpmEngine.hpp
+      case 'porta': case 'retrig': case 'detune': case 'lfo': {
+        // OPM68 control notes (keys 0-11, see plugin/opm68/OpmEngine.hpp)
         const us = tempos.length ? tempos[tempos.length - 1].us : 12288 * (256 - 200);
-        const rate = (e.perTick / 16384) / (us / 48 / 1e6); // semitones per second
-        const v = Math.max(0, Math.min(889 * 889 - 1, Math.round(rate * 1000) + 395160));
-        const hi = Math.floor(v / 889), lo = v % 889;
-        for (const [base, x] of [[0, hi], [7, lo]] as const) {
-          const key = base + Math.floor(x / 127), vel = (x % 127) + 1;
-          tr.add(T, [0x90 | mc, key, vel], 5);
+        const tickSec = us / 48 / 1e6;
+        const ctl = (key: number, v7: number) => {
+          tr.add(T, [0x90 | mc, key, Math.max(0, Math.min(126, v7)) + 1], 5);
           tr.add(T + Math.max(1, S >> 1), [0x80 | mc, key, 0], 2);
+        };
+        const ctl14 = (key: number, v: number) => { const x = Math.max(0, Math.min(16128, Math.round(v))); ctl(key, Math.floor(x / 127)); ctl(key + 1, x % 127); };
+        if (e.type === 'porta' || e.type === 'retrig') {
+          if (e.type === 'retrig') ctl(11, 0);
+          if (e.perTick !== 0 || e.type === 'retrig') ctl14(0, 8064 + (e.perTick / 16384 / tickSec) * 32);
+        } else if (e.type === 'detune') {
+          ctl14(2, 8064 + e.value);
+        } else {
+          const wave = !e.on ? 0 : e.wave <= 2 ? e.wave + 1 : 4;
+          ctl(4, wave);
+          if (e.on) {
+            ctl14(5, e.period * tickSec * 2000);
+            ctl14(7, 8064 + (e.amp / 16384) * (e.period / 2) * 256);
+            ctl14(9, e.delay * tickSec * 2000);
+          }
         }
         break;
       }

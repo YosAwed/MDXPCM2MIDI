@@ -137,20 +137,25 @@ describe('VOPM MUL=0 fix', () => {
   });
 });
 
-describe('OPM68 portamento control notes', () => {
-  it('sends portamento as control notes (keys 0-13) instead of pitch bend', () => {
+describe('OPM68 pitch control notes', () => {
+  const ctls = (m: Uint8Array) => { const a = Array.from(m); return a.map((b, k) => (b === 0x90 && a[k + 1] < 12 ? [a[k + 1], a[k + 2] - 1] : null)).filter((x): x is number[] => !!x); };
+  const v14 = (c: number[][], k: number) => c.find((x) => x[0] === k)![1] * 127 + c.find((x) => x[0] === k + 1)![1];
+  const tick = 12288 * 56 / 48 / 1e6; // tempo 200
+  it('sends portamento as control notes 0/1 instead of pitch bend', () => {
     const src = mdx([0xfd, 0x00, 0xf2, 0x04, 0x00, 0xa0, 47, 0xf1, 0]);
-    const r = convert(src, null, { fmMode: 'opm68' });
-    const a = Array.from(r.midi);
-    const ctl = a.map((b, k) => (b === 0x90 && a[k + 1] < 14 ? [a[k + 1], a[k + 2]] : null)).filter((x): x is number[] => !!x);
-    expect(ctl).toHaveLength(2);
-    const val = (k: number, v: number) => (k % 7) * 127 + v - 1;
-    const hi = ctl.find((c) => c[0] < 7)!, lo = ctl.find((c) => c[0] >= 7)!;
-    const rate = (val(hi[0], hi[1]) * 889 + val(lo[0], lo[1]) - 395160) / 1000;
-    expect(rate).toBeCloseTo(1 / 16 / (12288 * 56 / 48 / 1e6), 2); // 1/16 semitone per clock at tempo 200
-    // with control notes off, the portamento comes back as pitch-bend messages
-    const r2 = convert(src, null, { fmMode: 'opm68', opm68PortaNotes: false });
+    const c = ctls(convert(src, null, { fmMode: 'opm68' }).midi);
+    expect((v14(c, 0) - 8064) / 32).toBeCloseTo(1 / 16 / tick, 1);
     const bends = (m: Uint8Array) => Array.from(m).filter((b) => b === 0xe0).length;
-    expect(bends(r2.midi)).toBeGreaterThan(bends(r.midi) + 5);
+    expect(bends(convert(src, null, { fmMode: 'opm68', opm68PortaNotes: false }).midi)).toBeGreaterThan(bends(convert(src, null, { fmMode: 'opm68' }).midi) + 5);
+  });
+  it('sends detune and pitch LFO parameters', () => {
+    // F3 detune +32 (half a semitone), EC triangle period 8 amp 0x200, E9 delay 4
+    const src = mdx([0xfd, 0x00, 0xf3, 0x00, 0x20, 0xec, 0x02, 0x00, 0x08, 0x02, 0x00, 0xe9, 4, 0xa0, 47, 0xf1, 0]);
+    const c = ctls(convert(src, null, { fmMode: 'opm68' }).midi);
+    expect((v14(c, 2) - 8064) / 64).toBe(0.5);
+    expect(c.find((x) => x[0] === 4)![1]).toBe(3);
+    expect(v14(c, 5) / 2000).toBeCloseTo(8 * tick, 3);
+    expect((v14(c, 7) - 8064) / 256).toBeCloseTo((0x200 / 16384) * 4, 2);
+    expect(v14(c, 9) / 2000).toBeCloseTo(4 * tick, 3);
   });
 });

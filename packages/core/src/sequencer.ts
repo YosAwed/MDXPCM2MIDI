@@ -11,7 +11,11 @@ export type SeqEvent =
   | { t: number; ch: number; type: 'volume'; att: number } // OPM TL attenuation (0.75 dB steps)
   | { t: number; ch: number; type: 'pan'; pan: number }   // 0 off, 1 L, 2 R, 3 C
   | { t: number; ch: number; type: 'pitch'; semis: number } // offset from note in semitones
-  | { t: number; ch: number; type: 'porta'; perTick: number } // portaEvents only: portamento (1/16384 semitone per clock) starts now
+  // nativePitch only: the player applies portamento / detune / pitch LFO itself
+  | { t: number; ch: number; type: 'porta'; perTick: number }   // portamento (1/16384 semitone per clock) for the note starting now
+  | { t: number; ch: number; type: 'retrig'; perTick: number }  // tie: restart portamento and LFO of the held note
+  | { t: number; ch: number; type: 'detune'; value: number }    // 1/64 semitone
+  | { t: number; ch: number; type: 'lfo'; on: boolean; wave: number; period: number; amp: number; delay: number }
   | { t: number; ch: -1; type: 'tempo'; timerB: number }
   | { t: number; ch: -1; type: 'fade'; speed: number }
   | { t: number; ch: -1; type: 'loopPoint' };
@@ -24,8 +28,8 @@ export interface OpmLfo { wave: number; sync: number; lfrq: number; pmd: number;
 export interface SeqOptions {
   loops?: number;       // how many times looping channels should play the loop body (default 2)
   maxTicks?: number;    // safety cap
-  /** Emit portamento as 'porta' events (rate at note start) instead of folding it into 'pitch'. */
-  portaEvents?: boolean;
+  /** Emit portamento / detune / pitch LFO as parameter events instead of folding them into 'pitch'. */
+  nativePitch?: boolean;
 }
 
 export interface SeqResult {
@@ -79,7 +83,7 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
   const d = mdx.data;
   const loopsWanted = Math.max(1, opts.loops ?? 2);
   const maxTicks = opts.maxTicks ?? 48 * 4 * 1200; // ~1200 bars
-  const portaEv = opts.portaEvents === true;
+  const portaEv = opts.nativePitch === true;
   const events: SeqEvent[] = [];
   const warnings: string[] = [];
   const warnOnce = new Set<string>();
@@ -139,7 +143,7 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
 
     if (c.tiePrev && !c.pcm && c.curKey === key) {
       // tie: keep the note sounding (the portamento offset restarts from the note)
-      if (portaEv && (c.porta !== 0 || hadPorta)) events.push({ t, ch: c.idx, type: 'porta', perTick: c.porta });
+      if (portaEv && (c.porta !== 0 || hadPorta || c.lfo.on)) events.push({ t, ch: c.idx, type: 'retrig', perTick: c.porta });
     } else {
       if (c.curKey !== null) keyOff(c, t);
       if (c.keyOnDelay > 0 && c.keyOnDelay < len) {
@@ -225,7 +229,16 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
           c.pos = p + 3;
           break;
         }
-        case 0xf3: c.detune = s16(p + 1); c.pos = p + 3; break;
+        case 0xf3: {
+          const dt = s16(p + 1);
+          if (portaEv && dt !== c.detune) {
+            for (let i = events.length - 1; i >= 0 && events[i].t === t; i--) {
+              if (events[i].ch === c.idx && events[i].type === 'detune') { events.splice(i, 1); break; }
+            }
+            events.push({ t, ch: c.idx, type: 'detune', value: dt });
+          }
+          c.detune = dt; c.pos = p + 3; break;
+        }
         case 0xf2: c.portaNext = s16(p + 1); c.pos = p + 3; break;
         case 0xf1: {
           if (u8(p + 1) === 0) { c.ended = true; keyOff(c, t); c.pos = p + 2; break; }
@@ -248,10 +261,11 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
         case 0xed: if (c.pcm) c.freq = u8(p + 1); c.pos = p + 2; break; // FM ch: noise freq (ignored)
         case 0xec: { // pitch LFO
           const m = u8(p + 1);
-          if (m === 0x80) { c.lfo.on = false; c.pos = p + 2; break; }
-          if (m === 0x81) { c.lfo.on = true; c.pos = p + 2; break; }
-          c.lfo.wave = m & 3; c.lfo.period = (u8(p + 2) << 8) | u8(p + 3); c.lfo.amp = s16(p + 4); c.lfo.on = true;
-          c.pos = p + 6; break;
+          if (m === 0x80) { c.lfo.on = false; c.pos = p + 2; }
+          else if (m === 0x81) { c.lfo.on = true; c.pos = p + 2; }
+          else { c.lfo.wave = m & 3; c.lfo.period = (u8(p + 2) << 8) | u8(p + 3); c.lfo.amp = s16(p + 4); c.lfo.on = true; c.pos = p + 6; }
+          emitLfo(c);
+          break;
         }
         case 0xeb: { // amplitude LFO (ignored for now)
           const m = u8(p + 1);
@@ -263,7 +277,7 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
           if (!opmLfo) opmLfo = { wave: m & 3, sync: (m >> 6) & 1, lfrq: u8(p + 2), pmd: u8(p + 3) & 0x7f, amd: u8(p + 4) & 0x7f, pms: (u8(p + 5) >> 4) & 7, ams: u8(p + 5) & 3 };
           c.pos = p + 6; break;
         }
-        case 0xe9: c.lfo.delay = u8(p + 1); c.pos = p + 2; break;
+        case 0xe9: c.lfo.delay = u8(p + 1); c.pos = p + 2; emitLfo(c); break;
         case 0xe8: c.pos = p + 1; break; // PCM8 mode enable
         case 0xe7: { // fade out: E7 01 speed
           events.push({ t, ch: -1, type: 'fade', speed: u8(p + 2) });
@@ -275,6 +289,20 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
       }
     }
   };
+
+  const lastLfo = new Map<number, string>();
+  function emitLfo(c: Ch) {
+    if (!portaEv || c.pcm) return;
+    const l = c.lfo, k = `${l.on}|${l.wave}|${l.period}|${l.amp}|${l.delay}`;
+    if (lastLfo.get(c.idx) === k) return;
+    lastLfo.set(c.idx, k);
+    // several LFO commands in the same clock collapse into one event (one control note per key and time)
+    for (let i = events.length - 1; i >= 0 && events[i].t === t; i--) {
+      const x = events[i];
+      if (x.ch === c.idx && x.type === 'lfo') { events.splice(i, 1); break; }
+    }
+    events.push({ t, ch: c.idx, type: 'lfo', on: l.on, wave: l.wave, period: l.period, amp: l.amp, delay: l.delay });
+  }
 
   const pitchOf = (c: Ch): number => {
     let semis = c.detune / 64 + (portaEv ? 0 : c.portaAcc / 16384);
@@ -319,7 +347,7 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
       if (c.porta) c.portaAcc += c.porta;
       if (c.lfo.on) { if (c.lfo.delayCnt > 0) c.lfo.delayCnt--; else c.lfo.phase++; }
       const p = Math.round(pitchOf(c) * 4096) / 4096;
-      if (p !== c.lastPitch) { events.push({ t, ch: c.idx, type: 'pitch', semis: p }); c.lastPitch = p; }
+      if (!portaEv && p !== c.lastPitch) { events.push({ t, ch: c.idx, type: 'pitch', semis: p }); c.lastPitch = p; }
     }
     t++;
     for (const c of chs) if (c.wait > 0) c.wait--;

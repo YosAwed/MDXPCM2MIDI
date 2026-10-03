@@ -54,7 +54,7 @@ protected:
         fontSize(20); fillColor(Color(251, 146, 60)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
         text(12, 20, "OPM68", nullptr);
         fontSize(13); fillColor(Color(160, 164, 172));
-        text(84, 21, "YM2151 for MDX  -  ymfm core", nullptr);
+        text(84, 21, "YM2151 for MDX  -  ymfm core  -  v0.3", nullptr);
 
         // bank info
         fontSize(13); fillColor(Color(236, 235, 231));
