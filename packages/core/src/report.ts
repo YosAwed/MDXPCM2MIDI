@@ -31,6 +31,10 @@ export function formatReport(r: ConvertResult, opts: ReportOptions = {}): string
   if (vopm) {
     L.push('## VOPM の割り当て');
     L.push('');
+    if (r.channels.filter((c) => c.kind === 'FM').every((c) => c.midiCh === 1)) {
+      L.push('FM の各トラックはすべて MIDI ch1 で出力しています。トラックごとに VOPM を 1 つずつ割り当ててください。');
+      L.push('');
+    }
     L.push('| MIDI ch | MDX ch | 読み込む .opm |');
     L.push('|---|---|---|');
     for (const c of r.channels.filter((c) => c.kind === 'FM')) {

@@ -25,6 +25,10 @@ export interface ConvertOptions {
   vopmClock4MHz?: boolean;
   /** VOPM: keep VOPM's built-in lowpass filter on (default false = off, closer to the X68000) */
   vopmLowpass?: boolean;
+  /** VOPM: put every FM track on MIDI channel 1 (default true). FL Studio keeps each note's MIDI
+   *  channel on import, and VOPMex keeps separate state per MIDI channel, so notes on ch2-8 would
+   *  not use the voice shown in the editor. One instance per track makes ch1 safe. */
+  vopmChannel1?: boolean;
   pcmMode?: PcmMode;            // 'sf2': keys map to generated SoundFont; 'gm': GM drum map (default 'gm')
   bendRange?: number;           // semitones (default 12)
   ticksPerClock?: number;       // MIDI ticks per MDX clock (default 10 -> 480 PPQN)
@@ -177,8 +181,9 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   const tempos: { t: number; us: number }[] = [];
   const programs: Record<number, number> = {};
   const tracks = new Map<number, Track>();
+  const vopmCh1 = fmMode === 'vopm' && options.vopmChannel1 !== false;
   const midiChOf = (ch: number) => {
-    if (ch < 8) return ch;
+    if (ch < 8) return vopmCh1 ? 0 : ch;
     const j = ch - 8;
     return pcmMode === 'sf2' ? PCM_MIDI_CH_SF2[j] : 9;
   };
