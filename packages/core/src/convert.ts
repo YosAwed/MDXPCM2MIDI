@@ -33,6 +33,10 @@ export interface ConvertOptions {
    *  (RPN/NRPN, initial program, bank) stay at tick 0 so a DAW that swallows time-0 program
    *  changes as the "initial preset" still sees a real program change before the first note. */
   leadInBeats?: number;
+  /** VOPM: voices with a MUL=0 operator (x0.5 on a real OPM) are written with every MUL doubled and
+   *  their notes transposed down an octave, because VOPM does not reproduce MUL=0 as x0.5
+   *  (bass voices then sound an octave too high). Default true in VOPM mode. */
+  vopmMul0Fix?: boolean;
   pcmMode?: PcmMode;            // 'sf2': keys map to generated SoundFont; 'gm': GM drum map (default 'gm')
   bendRange?: number;           // semitones (default 12)
   ticksPerClock?: number;       // MIDI ticks per MDX clock (default 10 -> 480 PPQN)
@@ -105,7 +109,20 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   const warnings = [...seq.warnings];
   const volumeMode = options.volumeMode ?? (fmMode === 'vopm' ? 'bake' : 'cc7');
   const bake = fmMode === 'vopm' && volumeMode === 'bake';
-  let opmBank = writeOpmBank(mdx.voices, { name: mdx.title, lfo: seq.opmLfo, slots: slotMap });
+  const mul0Fix = new Set<number>();
+  let opmVoices = mdx.voices;
+  if (fmMode === 'vopm' && options.vopmMul0Fix !== false) {
+    opmVoices = new Map();
+    for (const [n, v] of mdx.voices) {
+      if (v.ops.some((o) => o.mul === 0) && v.ops.every((o) => o.mul <= 7)) {
+        mul0Fix.add(n);
+        opmVoices.set(n, { ...v, ops: v.ops.map((o) => ({ ...o, mul: o.mul === 0 ? 1 : o.mul * 2 })) });
+      } else opmVoices.set(n, v);
+    }
+    const bad = [...mdx.voices].filter(([, v]) => v.ops.some((o) => o.mul === 0) && !v.ops.every((o) => o.mul <= 7)).map(([n]) => `@${n}`);
+    if (bad.length) warnings.push(`MUL=0 を含むが補正できない音色があります (${bad.join(', ')}): VOPM では1オクターブ高く聞こえる可能性`);
+  }
+  let opmBank = writeOpmBank(opmVoices, { name: mdx.title, lfo: seq.opmLfo, slots: slotMap });
   let opmBanks: ConvertResult['opmBanks'] = [{ label: 'all', channels: 'ABCDEFGH', text: opmBank, voices: slotMap.size }];
 
   // --- volume baking: collect the (voice, attenuation) pairs each FM channel plays ---
@@ -139,7 +156,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
     for (const o of comboOrder) for (const k of o) if (!all.includes(k)) all.push(k);
     const entryFor = (k: string, slot: number): OpmEntry => {
       const [v, a] = k.split(':').map(Number);
-      return { slot, voice: applyVolume(mdx.voices.get(v)!, a), name: `MDX @${v} att${a}` };
+      return { slot, voice: applyVolume(opmVoices.get(v)!, a), name: `MDX @${v} att${a}` };
     };
     if (all.length <= 128) {
       all.forEach((k, i) => { for (const m of comboSlot) m.set(k, i); });
@@ -159,6 +176,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   }
   const curVoice = new Array(16).fill(-1), curAtt = new Array(16).fill(VOLTAB[8]), curProg = new Array(16).fill(-1);
   const usage = new Map<number, Map<string, ChannelUsage & { t0: number; t1: number }>>();
+  const sounding = new Map<string, number>();
   let lastUsage: (ChannelUsage & { t0: number; t1: number }) | null = null;
   const timeline = new Map<number, { t: number; voice: number }[]>();
   const bakeState = Array.from({ length: 8 }, () => ({ voice: -1, att: VOLTAB[8], prog: -1 }));
@@ -269,9 +287,13 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
     if (e.type === 'volume') curAtt[e.ch] = e.att;
     switch (e.type) {
       case 'noteOn': {
-        const key = e.ch < 8 ? e.key : pcmKeys[e.key].midiKey;
+        let key = e.ch < 8 ? e.key : pcmKeys[e.key].midiKey;
         if (key < 0 || key > 127) { warnings.push(`音域外のノート ${key} を省略`); return; }
         recordUsage(e.ch, e.t, e.ch < 8 ? undefined : e.key);
+        if (e.ch < 8 && mul0Fix.has(curVoice[e.ch])) {
+          const k2 = key - 12;
+          if (k2 >= 0) { sounding.set(`${e.ch}:${key}`, k2); key = k2; }
+        }
         if (bake && e.ch < 8) {
           const st = bakeState[e.ch];
           if (st.voice >= 0) {
@@ -287,7 +309,9 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
         break;
       }
       case 'noteOff': {
-        const key = e.ch < 8 ? e.key : pcmKeys[e.key].midiKey;
+        let key = e.ch < 8 ? e.key : pcmKeys[e.key].midiKey;
+        const sk = `${e.ch}:${key}`;
+        if (sounding.has(sk)) { key = sounding.get(sk)!; sounding.delete(sk); }
         if (key < 0 || key > 127) return;
         tr.add(T, [0x80 | mc, key, 0], 2);
         break;

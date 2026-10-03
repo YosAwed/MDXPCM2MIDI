@@ -119,6 +119,20 @@ describe('volume baking (vopm)', () => {
     expect(tlOf(1, 'C2')).toBe(0x2a);
     expect(tlOf(1, 'M1')).toBe(0); // modulators untouched
     const progs = Array.from(r.midi).map((b, i, a) => (b === 0xc0 ? a[i + 1] : -1)).filter((x) => x >= 0);
-    expect(progs).toEqual([0, 1]);
+    expect(progs).toEqual([0, 0, 1]); // initial program is also sent at tick 0 (lead-in)
+  });
+});
+
+describe('VOPM MUL=0 fix', () => {
+  it('doubles MULs and transposes notes down an octave for voices with MUL=0', () => {
+    const r = convert(mdx([0xfd, 0x00, 0xa0, 47, 0xf1, 0]), null, { fmMode: 'vopm' });
+    const L = r.opmBanks[0].text.split('\r\n');
+    const i = L.findIndex((l) => l.startsWith('@:0 '));
+    expect(+L[i + 3].trim().split(/\s+/)[8]).toBe(1); // M1 MUL 0 -> 1
+    const notes = Array.from(r.midi).map((b, k, a) => (b === 0x90 && a[k + 2] === 127 ? a[k + 1] : -1)).filter((x) => x >= 0);
+    expect(notes[0]).toBe(0x20 + 15 - 12);
+    const off = convert(mdx([0xfd, 0x00, 0xa0, 47, 0xf1, 0]), null, { fmMode: 'vopm', vopmMul0Fix: false });
+    const n2 = Array.from(off.midi).map((b, k, a) => (b === 0x90 && a[k + 2] === 127 ? a[k + 1] : -1)).filter((x) => x >= 0);
+    expect(n2[0]).toBe(0x20 + 15);
   });
 });
