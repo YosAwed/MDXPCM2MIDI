@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { basename, dirname, join, extname } from 'node:path';
-import { convert } from './index.js';
+import { convert, formatReport } from './index.js';
 
 const args = process.argv.slice(2);
 if (!args.length || args.includes('-h')) {
@@ -48,7 +48,15 @@ if (!out) out = join(dirname(input), basename(input, extname(input)) + '.mid');
 if (!json) {
   writeFileSync(out, res.midi);
   if (res.sf2) writeFileSync(out.replace(/\.mid$/i, '.sf2'), res.sf2);
-  if (vopm) writeFileSync(out.replace(/\.mid$/i, '.opm'), res.opmBank);
+  const stem = out.replace(/\.mid$/i, '');
+  const opmFiles: Record<string, string> = {};
+  if (vopm) {
+    for (const b of res.opmBanks) {
+      const f = res.opmBanks.length === 1 ? `${stem}.opm` : `${stem}_ch${b.label}.opm`;
+      writeFileSync(f, b.text); opmFiles[b.label] = basename(f);
+    }
+  }
+  writeFileSync(`${stem}_report.md`, formatReport(res, { fileName: basename(input), opmFiles }));
 }
 const info = {
   file: input, ok: true, title: res.title, pdx: res.pdxName, pdxFound: pdxPath || null, pcm8: res.pcm8,

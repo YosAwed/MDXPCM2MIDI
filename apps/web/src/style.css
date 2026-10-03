@@ -54,3 +54,13 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .item { grid-template-columns: 1fr; }
   .item .btns { grid-column: 1; grid-row: auto; }
 }
+
+.report { grid-column: 1 / -1; font-size: 13px; }
+.report summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.report .md { overflow-x: auto; }
+.report h4 { margin: 14px 0 6px; font-size: 14px; }
+.report h5 { margin: 12px 0 4px; font-size: 13px; font-family: var(--mono); }
+.report .li { margin: 2px 0; color: var(--sub); }
+.report table { border-collapse: collapse; font-family: var(--mono); font-size: 12px; margin-bottom: 6px; }
+.report th, .report td { border-bottom: 1px solid var(--line); padding: 3px 10px 3px 0; text-align: left; white-space: nowrap; }
+.report th { color: var(--sub); font-weight: 600; }

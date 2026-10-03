@@ -30,6 +30,30 @@ export interface ConvertOptions {
 
 export interface PcmKeyAssignment extends PcmKey { midiKey: number }
 
+export interface ChannelUsage {
+  /** MDX voice number (FM) or -1 */
+  voice: number;
+  /** MXDRV volume attenuation in effect (0.75 dB steps) */
+  att: number;
+  /** MIDI program sent (VOPM slot or GM program), -1 if none */
+  program: number;
+  /** ADPCM: index into pcmKeys */
+  pcmKey?: number;
+  notes: number;
+  firstSec: number;
+  lastSec: number;
+}
+
+export interface ChannelReport {
+  ch: string;            // MDX channel name A–H, P–W
+  midiCh: number;        // 1-based MIDI channel
+  kind: 'FM' | 'ADPCM';
+  notes: number;
+  usage: ChannelUsage[];
+  /** FM: when the MDX voice (@n) actually changes between notes, in playback order */
+  voiceTimeline: { sec: number; voice: number }[];
+}
+
 export interface ConvertResult {
   midi: Uint8Array;
   title: string;
@@ -47,6 +71,10 @@ export interface ConvertResult {
   opmBanks: { label: string; channels: string; text: string; voices: number }[];
   pcmKeys: PcmKeyAssignment[];  // for building the SoundFont (sf2 mode)
   seq: SeqResult;
+  /** which voice/program/volume each channel uses, for reports */
+  channels: ChannelReport[];
+  fmMode: FmMode;
+  volumeMode: 'cc7' | 'velocity' | 'bake';
 }
 
 const PCM_MIDI_CH_SF2 = [9, 8, 10, 11, 12, 13, 14, 15];
@@ -117,6 +145,10 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
       warnings.push('(音色×音量)の組が128を超えたため、FMチャンネルごとに別の .opm を出力しました');
     }
   }
+  const curVoice = new Array(16).fill(-1), curAtt = new Array(16).fill(VOLTAB[8]), curProg = new Array(16).fill(-1);
+  const usage = new Map<number, Map<string, ChannelUsage & { t0: number; t1: number }>>();
+  let lastUsage: (ChannelUsage & { t0: number; t1: number }) | null = null;
+  const timeline = new Map<number, { t: number; voice: number }[]>();
   const bakeState = Array.from({ length: 8 }, () => ({ voice: -1, att: VOLTAB[8], prog: -1 }));
 
   // PCM key assignment
@@ -191,20 +223,42 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
     emit(e);
   }
 
+  // usage is recorded before the bake branch decides the program; fixProgram patches it in
+  function recordUsage(ch: number, t: number, pcmKey?: number) {
+    let m = usage.get(ch);
+    if (!m) { m = new Map(); usage.set(ch, m); }
+    const prog = ch < 8 ? curProg[ch] : -1;
+    const k = ch < 8 ? `${curVoice[ch]}|${curAtt[ch]}|${bake ? '?' : prog}` : `p${pcmKey}|${curAtt[ch]}`;
+    let u = m.get(k);
+    if (!u) { u = { voice: ch < 8 ? curVoice[ch] : -1, att: curAtt[ch], program: prog, pcmKey, notes: 0, firstSec: 0, lastSec: 0, t0: t, t1: t }; m.set(k, u); }
+    u.notes++; u.t1 = t;
+    if (ch < 8) {
+      let tl = timeline.get(ch);
+      if (!tl) { tl = []; timeline.set(ch, tl); }
+      if (!tl.length || tl[tl.length - 1].voice !== curVoice[ch]) tl.push({ t, voice: curVoice[ch] });
+    }
+    lastUsage = u;
+  }
+  function fixProgram(_ch: number, _t: number, prog: number) { if (lastUsage) lastUsage.program = prog; }
+
   function emit(e: (typeof seq.events)[number]) {
     if (e.ch < 0) return;
     const tr = trackFor(e.ch);
     const mc = midiChOf(e.ch);
     const T = e.t * S;
+    if (e.type === 'voice' && mdx.voices.has(e.voice)) curVoice[e.ch] = e.voice;
+    if (e.type === 'volume') curAtt[e.ch] = e.att;
     switch (e.type) {
       case 'noteOn': {
         const key = e.ch < 8 ? e.key : pcmKeys[e.key].midiKey;
         if (key < 0 || key > 127) { warnings.push(`音域外のノート ${key} を省略`); return; }
+        recordUsage(e.ch, e.t, e.ch < 8 ? undefined : e.key);
         if (bake && e.ch < 8) {
           const st = bakeState[e.ch];
           if (st.voice >= 0) {
             const slot = comboSlot[e.ch].get(`${st.voice}:${qAtt(e.ch, st.att)}`);
             if (slot !== undefined && slot !== st.prog) { tr.add(T, [0xc0 | mc, slot], 3); st.prog = slot; }
+            fixProgram(e.ch, e.t, st.prog);
           }
           tr.add(T, [0x90 | mc, key, 127], 6);
           break;
@@ -231,6 +285,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
           ? (slotMap.get(e.voice) ?? 0)
           : options.programMap?.[e.voice] ?? defaultProgramFor(mdx.voices.get(e.voice));
         programs[e.voice] = prog;
+        curProg[e.ch] = prog;
         tr.add(T, [0xc0 | mc, prog & 127], 3);
         break;
       }
@@ -281,7 +336,14 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
 
   const ordered = [...tracks.entries()].sort((a, b) => a[0] - b[0]).map(([, tr]) => tr);
   const midi = writeSmf([conductor, ...ordered], 48 * S);
+  const channels: ChannelReport[] = [...usage.entries()].sort((a, b) => a[0] - b[0]).map(([ch, m]) => {
+    const list = [...m.values()].map(({ t0, t1, ...u }) => ({ ...u, firstSec: clockSec(t0), lastSec: clockSec(t1) }));
+    list.sort((a, b) => a.firstSec - b.firstSec);
+    return { ch: CHANNEL_NAMES[ch], midiCh: midiChOf(ch) + 1, kind: ch < 8 ? 'FM' : 'ADPCM', notes: list.reduce((a, u) => a + u.notes, 0), usage: list,
+      voiceTimeline: (timeline.get(ch) ?? []).map((x) => ({ sec: clockSec(x.t), voice: x.voice })) };
+  });
   return {
+    channels, fmMode, volumeMode,
     midi, title: mdx.title, pdxName: mdx.pdxName, pcm8: mdx.pcm8,
     durationSec: clockSec(endT), loopSec: seq.loopTick !== null ? clockSec(seq.loopTick) : null,
     warnings, usedChannels: [...tracks.keys()].sort((a, b) => a - b).map((c) => CHANNEL_NAMES[c]),

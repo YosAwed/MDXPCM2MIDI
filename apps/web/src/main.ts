@@ -110,7 +110,7 @@ async function convertItem(it: Item) {
   if (it.status === 'busy' || it.error) return;
   it.status = 'busy'; render();
   const pdx = pdxFor(it);
-  const r = await call({ kind: 'convert', mdx: it.mdx.slice(), pdx: pdx ? pdx.data.slice() : null, options: options(it) });
+  const r = await call({ kind: 'convert', mdx: it.mdx.slice(), pdx: pdx ? pdx.data.slice() : null, options: options(it), fileName: it.file });
   if (r.ok && r.kind === 'convert') { it.result = r; it.status = 'done'; }
   else if (!r.ok) { it.status = 'error'; it.error = r.error; }
   render();
@@ -132,6 +132,7 @@ async function zipAll() {
   for (const it of items) {
     if (!it.result) continue;
     files[`${base(it.file)}.mid`] = it.result.midi;
+    files[`${base(it.file)}_report.md`] = new TextEncoder().encode(it.result.report);
     for (const b of it.result.opmBanks ?? []) {
       const n = it.result.opmBanks!.length === 1 ? `${base(it.file)}.opm` : `${base(it.file)}_ch${b.label}.opm`;
       files[n] = new TextEncoder().encode(b.text);
@@ -153,6 +154,29 @@ $('clear').addEventListener('click', () => { items.length = 0; pdxPool.clear(); 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
+/** Minimal Markdown (headings, bullet lists, pipe tables) to HTML for the report. */
+function mdToHtml(md: string): string {
+  const out: string[] = [];
+  const lines = md.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.startsWith('|')) {
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].startsWith('|')) {
+        if (!/^\|[-| ]+\|$/.test(lines[i])) rows.push(lines[i].slice(1, -1).split('|').map((c) => c.trim()));
+        i++;
+      }
+      i--;
+      const [h, ...b] = rows;
+      out.push(`<table><thead><tr>${h.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${b.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
+    } else if (l.startsWith('### ')) out.push(`<h5>${esc(l.slice(4))}</h5>`);
+    else if (l.startsWith('## ')) out.push(`<h4>${esc(l.slice(3))}</h4>`);
+    else if (l.startsWith('# ')) continue;
+    else if (l.startsWith('- ')) out.push(`<p class="li">${esc(l.slice(2))}</p>`);
+  }
+  return out.join('');
+}
+
 function render() {
   const list = $('list');
   if (!items.length) {
@@ -165,16 +189,17 @@ function render() {
         : `<span class="badge warn" title="同じ名前の PDX をドロップすると SF2 を作れます">${esc(it.pdxName)}.PDX 未読込</span>`;
       const r = it.result;
       const meta = r ? `<span>${fmt(r.durationSec)}${r.loopSec !== null ? `(ループ ${fmt(r.loopSec)}〜)` : ''}</span><span>ch ${r.channels.join('')}</span>` : '';
+      const report = r ? `<details class="report"><summary>チャンネル別の音色割り当て</summary><div class="md">${mdToHtml(r.report)}</div></details>` : '';
       const warns = r?.warnings.length ? `<details class="warns"><summary>警告 ${r.warnings.length} 件</summary><ul>${r.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></details>` : '';
       const btns = it.status === 'done' && r
-        ? `<button data-dl="mid" data-id="${it.id}">.mid</button>${r.sf2 ? `<button data-dl="sf2" data-id="${it.id}" class="secondary">.sf2</button>` : ''}${r.opmBanks?.length ? `<button data-dl="opm" data-id="${it.id}" class="secondary" title="VOPM 音色バンク (${r.opmVoices} 音色)">${r.opmBanks.length > 1 ? `.opm ×${r.opmBanks.length}` : '.opm'}</button>` : ''}`
+        ? `<button data-dl="mid" data-id="${it.id}">.mid</button>${r.sf2 ? `<button data-dl="sf2" data-id="${it.id}" class="secondary">.sf2</button>` : ''}<button data-dl="report" data-id="${it.id}" class="ghost" title="チャンネル別の音色割り当てレポート (Markdown)">レポート.md</button>${r.opmBanks?.length ? `<button data-dl="opm" data-id="${it.id}" class="secondary" title="VOPM 音色バンク (${r.opmVoices} 音色)">${r.opmBanks.length > 1 ? `.opm ×${r.opmBanks.length}` : '.opm'}</button>` : ''}`
         : it.status === 'busy' ? '<span class="spin">変換中…</span>'
         : it.status === 'error' ? `<span class="err">${esc(it.error ?? 'エラー')}</span>`
         : `<button data-conv="${it.id}" class="secondary">変換</button>`;
       return `<article class="item ${it.status}">
         <div class="name"><strong>${esc(it.title || it.file)}</strong><small>${esc(it.file)}${it.pcm8 ? ' · PCM8' : ''}</small></div>
         <div class="meta">${pdxBadge}${meta}</div>
-        <div class="btns">${btns}</div>${warns}
+        <div class="btns">${btns}</div>${report}${warns}
       </article>`;
     }).join('');
   }
@@ -191,6 +216,7 @@ $('list').addEventListener('click', (e) => {
     const it = items.find((i) => i.id === +(t.dataset.id ?? 0));
     if (it?.result) {
       if (dl === 'mid') download(`${base(it.file)}.mid`, it.result.midi, 'audio/midi');
+      else if (dl === 'report') download(`${base(it.file)}_report.md`, new TextEncoder().encode(it.result.report), 'text/markdown');
       else if (dl === 'opm' && it.result.opmBanks?.length) {
         const banks = it.result.opmBanks;
         if (banks.length === 1) download(`${base(it.file)}.opm`, new TextEncoder().encode(banks[0].text), 'text/plain');
