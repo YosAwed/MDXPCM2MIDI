@@ -27,8 +27,12 @@ export interface ConvertOptions {
   vopmLowpass?: boolean;
   /** VOPM: put every FM track on MIDI channel 1 (default true). FL Studio keeps each note's MIDI
    *  channel on import, and VOPMex keeps separate state per MIDI channel, so notes on ch2-8 would
-   *  not use the voice shown in the editor. One instance per track makes ch1 safe. */
+   *  not use the voice shown in the editor. Default false: FL merges tracks sharing a channel. */
   vopmChannel1?: boolean;
+  /** Silence inserted before the music, in beats (default 4 in VOPM mode, else 0). Setup events
+   *  (RPN/NRPN, initial program, bank) stay at tick 0 so a DAW that swallows time-0 program
+   *  changes as the "initial preset" still sees a real program change before the first note. */
+  leadInBeats?: number;
   pcmMode?: PcmMode;            // 'sf2': keys map to generated SoundFont; 'gm': GM drum map (default 'gm')
   bendRange?: number;           // semitones (default 12)
   ticksPerClock?: number;       // MIDI ticks per MDX clock (default 10 -> 480 PPQN)
@@ -181,7 +185,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   const tempos: { t: number; us: number }[] = [];
   const programs: Record<number, number> = {};
   const tracks = new Map<number, Track>();
-  const vopmCh1 = fmMode === 'vopm' && options.vopmChannel1 !== false;
+  const vopmCh1 = fmMode === 'vopm' && options.vopmChannel1 === true;
   const midiChOf = (ch: number) => {
     if (ch < 8) return vopmCh1 ? 0 : ch;
     const j = ch - 8;
@@ -349,6 +353,22 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   }
   conductor.meta(endT * S, 0x01, Array.from(new TextEncoder().encode('end')), 9);
 
+  // lead-in: shift musical events, keep setup (order < 2 at tick 0) in place
+  const lead = Math.round((options.leadInBeats ?? (fmMode === 'vopm' ? 4 : 0)) * 48 * S);
+  if (lead > 0) {
+    for (const tr of [conductor, ...tracks.values()]) {
+      for (const ev of tr.events) {
+        const setup = ev.tick === 0 && ev.order < 2e7;
+        if (!setup) ev.tick += lead;
+      }
+    }
+    // also put a copy of each track's first program change at tick 0: if the DAW swallows that one
+    // as the initial preset, the original (now at the end of the lead-in) is still sent as an event
+    for (const tr of tracks.values()) {
+      const first = tr.events.filter((e) => (e.bytes[0] & 0xf0) === 0xc0).sort((a, b) => a.tick - b.tick || a.order - b.order)[0];
+      if (first) tr.add(0, [...first.bytes], 1);
+    }
+  }
   const ordered = [...tracks.entries()].sort((a, b) => a[0] - b[0]).map(([, tr]) => tr);
   const midi = writeSmf([conductor, ...ordered], 48 * S);
   const channels: ChannelReport[] = [...usage.entries()].sort((a, b) => a[0] - b[0]).map(([ch, m]) => {
