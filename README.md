@@ -8,7 +8,7 @@ FM パートは、同梱の YM2151 プラグイン **OPM68** (VST3 / CLAP) で�
 
 | FM 音色モード | 出力 | 再生方法 |
 |---|---|---|
-| **OPM68 (既定・推奨)** | `.mid` + `.opm` (+ `.sf2`) | FM トラックごとに OPM68 を立ち上げ `.opm` を読み込む |
+| **OPM68 (既定・推奨)** | `.flp` / `.mid` + `.opm` (+ `.sf2`) | FL Studio は `.flp` を開くだけ (OPM68 ×8 と音色を設定済み)。他の DAW は FM トラックごとに OPM68 を立ち上げ `.opm` を読み込む |
 | VOPM | `.mid` + `.opm` (+ `.sf2`) | VOPM / VOPMex を 8 インスタンス、MIDI ch1–8 に割り当て |
 | GM 近似 | `.mid` (+ `.sf2`) | 一般の GM 音源。FM 音色は OPM パラメータから推定 |
 
@@ -22,6 +22,7 @@ packages/core       変換コア (TypeScript, 依存なし)
   src/sequencer.ts    仮想 MXDRV シーケンサ (リピート・ループ・同期・テンポ・ポルタメント/LFO)
   src/convert.ts      シーケンサ出力 → SMF (format 1, 480 PPQN)
   src/opm.ts          .opm 音色バンク (VOPM / OPM68) ライタ
+  src/flp.ts          FL Studio プロジェクト (.flp) の読み書き・テンプレートへの流し込み
   src/gm.ts           OPM 音色 → GM 音色の推定
   src/pdx.ts          PDX 解析・MSM6258 ADPCM / PCM8 16bit・8bit 復号
   src/sf2.ts          SoundFont 2 ライタ
@@ -41,7 +42,7 @@ pnpm test                      # ユニットテスト
 pnpm dev                       # http://localhost:5173
 pnpm build                     # apps/web/dist を生成 (Cloudflare Pages の出力先)
 node packages/core/dist/cli.mjs song.mdx [-p song.pdx] [-o out.mid] [--loops 2] [--fade 8] \
-     [--gm] [--opm68 | --vopm] [--no-pdx] [--json]
+     [--gm] [--opm68 | --vopm] [--flp template.flp] [--no-pdx] [--json]
 ```
 
 CLI は FM の既定が GM 近似です (Web UI の既定は OPM68)。`-p` を省略すると MDX 内の PDX 名から同じフォルダ・`../PDX`・親フォルダを探します。
@@ -78,7 +79,15 @@ node corpus.mjs summary out.jsonl
 - 音量・ポルタメント・ディチューン・音程 LFO (MP)・音量 LFO (MA)・LFO ディレイ (MD)・テンポは、ピッチベンドや CC を使わず、ピアノロール最下部 (MIDI ノート 0〜14、MDX の最低音より下) の短い「制御ノート」で送ります。OPM68 が MXDRV 2.06 と同じ計算で 1 クロックごとに音程と音量を動かすため、DAW のピッチベンド間引きやピッチ幅設定に左右されません。制御ノートは消したり動かしたりしないでください。
 - MXDRV 2.06 (portable_mdx) の OPM レジスタ書き込みとクロック単位で比べ、音程・音量とも 98〜100% 一致することを確認しています (`tools/mxverify`)。
 - プラグインの導入・FL Studio での使い方・制御ノートの仕様は [plugin/opm68/README.md](plugin/opm68/README.md) を参照してください。
-- FL Studio で制御ノートが低音として鳴る場合は古いプラグインが残っています。OPM68 の UI の版表記 (v0.5) を確認してください。v0.5 の MIDI は v0.4 以前のプラグインでは正しく鳴りません。
+- FL Studio で制御ノートが低音として鳴る場合は古いプラグインが残っています。OPM68 の UI の版表記 (v0.6) を確認してください。v0.5 以降の MIDI は v0.4 以前のプラグインでは正しく鳴りません。
+- フェードアウト (E7 / `fadeSeconds`) も制御ノート (FADE) で送ります (v0.6)。パンは CC10 のままです。
+
+### FL Studio プロジェクト (.flp) 出力 (v0.6)
+- OPM68 モードでは `.flp` も作れます (Web UI の「.flp」ボタン / CLI `--flp テンプレート.flp`)。MIDI を読み込んでチャンネルごとに OPM68 へ差し替える手間がなくなります。
+- テンプレート (`apps/web/public/opm68_template.flp`、FL Studio 2026 で作成) には OPM68 (CLAP) が 8 つ (FM A〜FM H) と sforzando (ADPCM) が入っています。変換器は Pattern 1 にノート・制御ノート・パン (チャンネルパンのイベント) を入れ、各 OPM68 のプラグイン状態に曲の `.opm` を埋め込み、テンポ・タイトル・プレイリスト上の長さを設定します。
+- 自分のテンプレートも使えます (Web UI に `.flp` をドロップ)。条件: チャンネル名 `FM A`〜`FM H` (無ければ OPM68 のチャンネルを順に使用)、Pattern 1 がプレイリストに置かれていること。ADPCM は名前に `ADPCM` を含むチャンネルに入ります (SF2 は手動で読み込み)。
+- 曲中でテンポが変わる曲は、FL のテンポを最初の値に固定し、ノート位置を実時間に合わせて配置します (PPQ 960)。OPM68 は制御ノートのテンポ情報で LFO などを刻むので音は変わりません。
+- パン p0 (発音オフ) は .flp では表現できないため無視します。
 
 ### VOPM モード (`fmMode: 'vopm'` / CLI `--vopm`)
 

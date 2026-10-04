@@ -16,6 +16,7 @@
 //   type 4 DELAY   varint u = E9 LFO delay
 //   type 5 CLOCK   varint u = 256 - TimerB (the MDX clock is that many 256 us units)
 //   type 6 VOLUME  varint u = MXDRV attenuation (voices are not volume-baked in this mode)
+//   type 7 FADE    varint u = extra attenuation for the fade-out (0 = none, 127 = silent), added to VOLUME
 //
 // varint: base-63 digits (0..62), least significant first, bit 6 (+64) = more bytes follow, so every
 // byte stays <= 126 (velocity <= 127); signed values are zigzag-encoded.
@@ -27,10 +28,11 @@ export type CtlItem =
   | { k: 'plfo' | 'alfo'; mode: number; per: number; amp: number }
   | { k: 'delay'; v: number }
   | { k: 'clock'; v: number }
-  | { k: 'vol'; v: number };
+  | { k: 'vol'; v: number }
+  | { k: 'fade'; v: number };
 
 export const CTL_KEYS = 15;
-const PRIORITY: Record<CtlItem['k'], number> = { porta: 0, detune: 1, vol: 2, clock: 3, plfo: 4, alfo: 5, delay: 6 };
+const PRIORITY: Record<CtlItem['k'], number> = { porta: 0, detune: 1, vol: 2, fade: 3, clock: 4, plfo: 5, alfo: 6, delay: 7 };
 
 const varint = (u: number): number[] => {
   const out: number[] = [];
@@ -54,6 +56,7 @@ export function encodeItem(it: CtlItem): number[] {
     case 'delay': return [0x40, ...varint(it.v)];
     case 'clock': return [0x50, ...varint(it.v)];
     case 'vol': return [0x60, ...varint(it.v)];
+    case 'fade': return [0x70, ...varint(it.v)];
   }
 }
 
@@ -99,6 +102,7 @@ export function decodePacket(bytes: number[]): CtlItem[] {
     } else if (type === 4) items.push({ k: 'delay', v: rd() });
     else if (type === 5) items.push({ k: 'clock', v: rd() });
     else if (type === 6) items.push({ k: 'vol', v: rd() });
+    else if (type === 7) items.push({ k: 'fade', v: rd() });
     else break;
   }
   return items;

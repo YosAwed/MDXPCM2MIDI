@@ -211,3 +211,28 @@ describe('MXDRV LFO model', () => {
     expect(new Set(cc11).size).toBeGreaterThan(3);
   });
 });
+
+describe('FL Studio project (.flp)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { parseFlp, writeFlp, buildFlp, decodeNotes, cleanTitle, FLP } = await import('../src/flp.js');
+  const tpl = new Uint8Array(readFileSync(new URL('../../../apps/web/public/opm68_template.flp', import.meta.url)));
+  it('round-trips the bundled template byte for byte', () => {
+    const w = writeFlp(parseFlp(tpl));
+    expect(w.length).toBe(tpl.length);
+    expect(w.every((b, i) => b === tpl[i])).toBe(true);
+  });
+  it('puts every MIDI note of the OPM68 conversion into pattern 1 and embeds the bank', () => {
+    // A: @0 v15, c d e (cmd 0x80+note, length)
+    const r = convert(mdx([0xfd, 0x00, 0xf0, 0x0f, 0x80 + 30, 48, 0x80 + 32, 48, 0x80 + 34, 48]), null, { fmMode: 'opm68', pcmMode: 'gm' });
+    const banks: Record<string, string> = {};
+    for (const b of r.opmBanks) for (const L of b.channels) banks[L] = b.text;
+    const out = buildFlp({ template: tpl, midi: r.midi, banks, title: '\x1bE TEST', name: 'test' });
+    const f = parseFlp(out.flp);
+    const notes = decodeNotes(f.events.find((e) => e.id === FLP.PatternNotes)!.data);
+    expect(notes.length).toBe(out.notes);
+    expect(notes.filter((n) => n.key >= 15).map((n) => n.key)).toEqual([45, 47, 49]); // MDX note n = MIDI n + 15
+    const dec = new TextDecoder();
+    expect(f.events.some((e) => e.id === FLP.PluginData && dec.decode(e.data).includes('bankdata\0//MiOPMdrv'))).toBe(true);
+    expect(cleanTitle('\x1bE\x1b[1mKnight  Arms\r\n')).toBe('Knight Arms');
+  });
+});

@@ -1,0 +1,46 @@
+diff --git a/distrho/src/DistrhoPluginCLAP.cpp b/distrho/src/DistrhoPluginCLAP.cpp
+index 5939092..b7bf0c5 100644
+--- a/distrho/src/DistrhoPluginCLAP.cpp
++++ b/distrho/src/DistrhoPluginCLAP.cpp
+@@ -69,6 +69,9 @@
+ 
+ START_NAMESPACE_DISTRHO
+ 
++// OPM68 patch: recover the host velocity exactly whether it was scaled by 1/128 (FL Studio) or 1/127
++static inline int hostVelocity(double x) { const double a = x * 128.0, b = (double)(long)(a + 0.5); if (b >= 1.0 && a - b < 1e-4 && b - a < 1e-4) return b > 127.0 ? 127 : (int)b; const int v = (int)(x * 127.0 + 0.5); return v < 0 ? 0 : v > 127 ? 127 : v; }
++
+ // --------------------------------------------------------------------------------------------------------------------
+ 
+ typedef std::map<const String, String> StringMap;
+@@ -1330,7 +1333,7 @@ public:
+         midiEvent.size  = 3;
+         midiEvent.data[0] = (isOn ? 0x90 : 0x80) | (event->channel & 0x0F);
+         midiEvent.data[1] = std::max(0, std::min(127, static_cast<int>(event->key)));
+-        midiEvent.data[2] = std::max(0, std::min(127, static_cast<int>(event->velocity * 127 + 0.5)));
++        midiEvent.data[2] = hostVelocity(event->velocity); // OPM68: FL Studio sends velocity/128
+     }
+ 
+     void addMidiEvent(const clap_event_midi_t* const event) noexcept
+diff --git a/distrho/src/DistrhoPluginVST3.cpp b/distrho/src/DistrhoPluginVST3.cpp
+index 7295c89..8deb2fb 100644
+--- a/distrho/src/DistrhoPluginVST3.cpp
++++ b/distrho/src/DistrhoPluginVST3.cpp
+@@ -60,6 +60,9 @@
+ 
+ START_NAMESPACE_DISTRHO
+ 
++// OPM68 patch: recover the host velocity exactly whether it was scaled by 1/128 (FL Studio) or 1/127
++static inline int hostVelocity(double x) { const double a = x * 128.0, b = (double)(long)(a + 0.5); if (b >= 1.0 && a - b < 1e-4 && b - a < 1e-4) return b > 127.0 ? 127 : (int)b; const int v = (int)(x * 127.0 + 0.5); return v < 0 ? 0 : v > 127 ? 127 : v; }
++
+ // --------------------------------------------------------------------------------------------------------------------
+ 
+ #if ! DISTRHO_PLUGIN_WANT_MIDI_OUTPUT
+@@ -359,7 +362,7 @@ class PluginVst3
+                     midiEvent.size = 3;
+                     midiEvent.data[0] = 0x90 | (eventStorage.noteOn.channel & 0xf);
+                     midiEvent.data[1] = eventStorage.noteOn.pitch;
+-                    midiEvent.data[2] = std::max(0, std::min(127, d_roundToIntPositive(eventStorage.noteOn.velocity * 127)));
++                    midiEvent.data[2] = hostVelocity(eventStorage.noteOn.velocity); // OPM68: FL Studio sends velocity/128
+                     midiEvent.data[3] = 0;
+                     break;
+                 case NoteOff:

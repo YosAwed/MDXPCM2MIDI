@@ -246,6 +246,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
     lastCc.set(k, val);
     tr.add(T, [0xb0 | mc, num, val], 3);
   };
+  const attFromCC = (v: number) => (v <= 0 ? 127 : Math.max(0, Math.min(127, Math.round((-40 * Math.log10(v / 127)) / 0.75))));
   const ccFromAtt = (att: number) => Math.max(0, Math.min(127, Math.round(127 * Math.pow(10, (-0.75 * att) / 40))));
 
   let fadeStart: number | null = null;
@@ -400,19 +401,6 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
     }
   }
 
-  // OPM68 control notes
-  if (nativeCtl) for (let ch = 0; ch < 8; ch++) {
-    if (!seq.usedChannels[ch]) continue;
-    const tr = trackFor(ch), mc = midiChOf(ch);
-    for (const [tick, bytes] of packControl(ctlItems[ch])) {
-      const T = tick * S;
-      bytes.forEach((b, key) => {
-        tr.add(T, [0x90 | mc, key, b + 1], 5);
-        tr.add(T + Math.max(1, S >> 1), [0x80 | mc, key, 0], 2);
-      });
-    }
-  }
-
   // fade: explicit E7 or requested fade at the end of looping songs
   let endT = seq.endTick;
   const fadeSec = options.fadeSeconds ?? 0;
@@ -426,10 +414,27 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
       const mc = midiChOf(ch);
       for (let i = 1; i <= steps; i++) {
         const t = Math.round(from + ((endT - from) * i) / steps);
-        tr.add(t * S, [0xb0 | mc, 11, Math.round(127 * (1 - i / steps))], 3);
+        const v = Math.round(127 * (1 - i / steps));
+        // OPM68: the fade goes into the control packets (CC11 stays free for pan off)
+        if (nativeCtl && ch < 8) ctl(ch, t, { k: 'fade', v: attFromCC(v) });
+        else tr.add(t * S, [0xb0 | mc, 11, v], 3);
       }
     }
   }
+
+  // OPM68 control notes
+  if (nativeCtl) for (let ch = 0; ch < 8; ch++) {
+    if (!seq.usedChannels[ch]) continue;
+    const tr = trackFor(ch), mc = midiChOf(ch);
+    for (const [tick, bytes] of packControl(ctlItems[ch])) {
+      const T = tick * S;
+      bytes.forEach((b, key) => {
+        tr.add(T, [0x90 | mc, key, b + 1], 5);
+        tr.add(T + Math.max(1, S >> 1), [0x80 | mc, key, 0], 2);
+      });
+    }
+  }
+
   // close everything at endT
   for (const [ch, tr] of tracks) {
     const mc = midiChOf(ch);

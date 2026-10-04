@@ -7,6 +7,7 @@ MDXPCM2MIDI の出力を X68000 と同じ YM2151 で鳴らすためのプラグ�
 - MXDRV と同じ音程 (MIDI ノート − 15 = MDX ノート、KF+5) と音量計算 (キャリア TL に減衰を加算)
 - **ノートのベロシティ 1〜127 で音色 (バンクのスロット 0〜126) を選ぶ**モード (既定 ON)。DAW がプログラムチェンジや MIDI チャンネルを捨てても音色が正しく切り替わる
 - **MXDRV のドライバ処理を内蔵**: ポルタメント、ディチューン、ソフトウェア LFO (EC 音程 / EB 音量)、LFO ディレイ (E9)、音量を、MXDRV 2.06 と同じクロック単位の計算で再現 (下記「制御ノート」)
+- ベロシティは DAW から届いた値をそのまま復元 (FL Studio は値/128 で渡すため、DPF の既定の ×127 丸めでは 65 以上が 1 ずれる。`dpf-velocity.patch` で対応)
 - MIDI チャンネルは無視 (どのチャンネルのノートも同じように鳴る)
 - CC7 / CC11 は MXDRV の音量カーブ (0.75dB/step) として TL に反映、CC10 パン、ピッチベンド (RPN でレンジ指定、既定 ±12)
 - 1 インスタンスで最大 8 音ポリ (Mono スイッチあり)
@@ -35,6 +36,7 @@ bos06 / bos14 / Knight Arms / Star Cruiser などで 98〜100% 一致するこ�
 ## ビルド
 ```sh
 git clone --recursive https://github.com/DISTRHO/DPF.git ../DPF
+git -C ../DPF apply "$PWD/dpf-velocity.patch"   # FL Studio のベロシティ (値/128) を正確に復元する
 make                                   # Linux
 make WINDOWS=true CC=x86_64-w64-mingw32-gcc-posix CXX=x86_64-w64-mingw32-g++-posix \
      DPF_TARGET_DIR=bin-win DPF_BUILD_DIR=build-win   # Windows (mingw-w64)

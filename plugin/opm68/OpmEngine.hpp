@@ -35,7 +35,7 @@ public:
         fProgram = 0; fVol = 127; fExpr = 127; fPan = 64; fBend = 0; fBendRange = fDefaultBend;
         fRpnMsb = fRpnLsb = 127; fAge = 0;
         fLfoVoice = -1; fLastOn = -1; fCtlAny = false; for (int& x : fCtl) x = -1;
-        fPorta = 0; fPortaAcc = 0; fDetuneKf = 0; fVolAtt = 0; fPLfo = mx::PitchLfo(); fALfo = mx::AmpLfo(); fDelay = fDelayCnt = 0;
+        fPorta = 0; fPortaAcc = 0; fDetuneKf = 0; fVolAtt = 0; fFadeAtt = 0; fPLfo = mx::PitchLfo(); fALfo = mx::AmpLfo(); fDelay = fDelayCnt = 0;
         fRnd = mx::Random(); fNextTick = 0; fLastOnTime = 0;
     }
 
@@ -174,6 +174,7 @@ private:
             case 4: fDelay = rd() & 0xff; break;
             case 5: { int v = rd(); if (v > 0) fClockSec = v * 256e-6; break; }
             case 6: fVolAtt = std::min(127, rd()); if (fLastOn >= 0) fCh[fLastOn].levelKey = -1; break;
+            case 7: { int v = std::min(127, rd()); if (v != fFadeAtt) { fFadeAtt = v; refreshLevels(); } break; } // fade-out
             default: p = n; break;
             }
         }
@@ -269,17 +270,17 @@ private:
         // amplitude LFO: MXDRV adds the high byte to the volume; an overflow (>= 0x80) mutes
         // MXDRV: volume + amplitude-LFO high byte, any overflow (>= 0x80) becomes 0x7f
         int mxAtt = ch.volAtt + ch.amAtt; if (mxAtt >= 0x80) mxAtt = 0x7f;
-        int att = std::min(127, attFromCC(fVol) + attFromCC(fExpr) + mxAtt);
+        int att = std::min(127, attFromCC(fVol) + attFromCC(fExpr) + mxAtt + fFadeAtt);
         int key = att * 8 + panBits();
         (void)0;
         if (key == ch.levelKey) return;
         ch.levelKey = key;
         if (traceFile() && c == fLastOn) std::fprintf(traceFile(), "%.6f a %d\n", fNow / chipRate(), att);
-        static const int carriers[8] = { 8, 8, 8, 8, 10, 14, 14, 15 }; // bits over register slots M1,M2,C1,C2
+        static const int carriers[8] = { 8, 8, 8, 8, 10, 14, 14, 15 }; // carrier bits in file order M1,C1,M2,C2 (OP1..OP4)
         static const int fileToReg[4] = { 0, 2, 1, 3 };
         for (int k = 0; k < 4; k++) {
             int rs = fileToReg[k];
-            int tl = v.op[k].tl + (((carriers[v.con & 7] >> rs) & 1) ? att : 0);
+            int tl = v.op[k].tl + (((carriers[v.con & 7] >> k) & 1) ? att : 0);
             if (traceFile() && c == fLastOn && rs == 3) std::fprintf(traceFile(), "%.6f t %d\n", fNow / chipRate(), std::min(127, tl));
             write(0x60 + rs * 8 + c, std::min(127, tl));
         }
@@ -318,7 +319,7 @@ private:
     int fLastOn = -1;
     uint64_t fLastOnTime = 0;
     // MDX channel state (one MDX channel per plugin instance)
-    int fPorta = 0, fDetuneKf = 0, fDelay = 0, fDelayCnt = 0, fVolAtt = 0;
+    int fPorta = 0, fDetuneKf = 0, fDelay = 0, fDelayCnt = 0, fVolAtt = 0, fFadeAtt = 0;
     int32_t fPortaAcc = 0;
     mx::PitchLfo fPLfo;
     mx::AmpLfo fALfo;

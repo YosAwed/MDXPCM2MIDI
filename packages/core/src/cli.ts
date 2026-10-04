@@ -1,13 +1,13 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { basename, dirname, join, extname } from 'node:path';
-import { convert, formatReport } from './index.js';
+import { convert, formatReport, buildFlp } from './index.js';
 
 const args = process.argv.slice(2);
 if (!args.length || args.includes('-h')) {
-  console.log('usage: mdx2mid <file.mdx> [-p file.pdx] [-o out.mid] [--loops N] [--fade SEC] [--gm] [--vopm|--opm68] [--json]');
+  console.log('usage: mdx2mid <file.mdx> [-p file.pdx] [-o out.mid] [--loops N] [--fade SEC] [--gm] [--vopm|--opm68] [--flp template.flp] [--json]');
   process.exit(0);
 }
-let input = '', pdxPath = '', out = '', loops = 2, fade = 0, gm = false, json = false, noPdx = false, vopm = false, opm68 = false;
+let input = '', pdxPath = '', out = '', loops = 2, fade = 0, gm = false, json = false, noPdx = false, vopm = false, opm68 = false, flpTemplate = '';
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '-p') pdxPath = args[++i];
@@ -17,6 +17,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--gm') gm = true;
   else if (a === '--vopm') vopm = true;
   else if (a === '--opm68') { opm68 = true; vopm = true; }
+  else if (a === '--flp') { flpTemplate = args[++i]; opm68 = true; vopm = true; }
   else if (a === '--no-pdx') noPdx = true;
   else if (a === '--json') json = true;
   else input = a;
@@ -56,6 +57,13 @@ if (!json) {
       const f = res.opmBanks.length === 1 ? `${stem}.opm` : `${stem}_ch${b.label}.opm`;
       writeFileSync(f, b.text); opmFiles[b.label] = basename(f);
     }
+  }
+  if (flpTemplate) {
+    const banks: Record<string, string> = {};
+    for (const b of res.opmBanks) for (const L of b.channels) banks[L] = b.text;
+    const f = buildFlp({ template: new Uint8Array(readFileSync(flpTemplate)), midi: res.midi, banks, title: res.title || basename(input), name: basename(input, extname(input)) });
+    writeFileSync(`${stem}.flp`, f.flp);
+    res.warnings.push(...f.warnings);
   }
   writeFileSync(`${stem}_report.md`, formatReport(res, { fileName: basename(input), opmFiles }));
 }

@@ -18,6 +18,14 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const items: Item[] = [];
 const pdxPool = new Map<string, { name: string; data: Uint8Array }>();
 let nextId = 1;
+/** FL Studio template: the bundled one (8 x OPM68) unless the user drops their own .flp. */
+let customTemplate: { name: string; data: Uint8Array } | null = null;
+let bundledTemplate: Promise<Uint8Array | null> | null = null;
+async function flpTemplate(): Promise<Uint8Array | null> {
+  if (customTemplate) return customTemplate.data;
+  bundledTemplate ??= fetch('/opm68_template.flp').then(async (r) => (r.ok ? new Uint8Array(await r.arrayBuffer()) : null)).catch(() => null);
+  return bundledTemplate;
+}
 
 // ---- worker RPC ----
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
@@ -34,7 +42,10 @@ function call(req: ReqNoId): Promise<WorkerRes> {
 async function addFiles(files: File[]) {
   for (const f of files) {
     const data = new Uint8Array(await f.arrayBuffer());
-    if (/\.pdx$/i.test(f.name)) {
+    if (/\.flp$/i.test(f.name)) {
+      customTemplate = { name: f.name, data };
+      for (const it of items) if (it.status === 'done') { it.status = 'ready'; it.result = undefined; }
+    } else if (/\.pdx$/i.test(f.name)) {
       pdxPool.set(f.name.toLowerCase(), { name: f.name, data });
     } else if (/\.mdx$/i.test(f.name)) {
       const it: Item = { id: nextId++, file: f.name, mdx: data, title: '', pdxName: '', pcm8: false, status: 'ready' };
@@ -110,7 +121,9 @@ async function convertItem(it: Item) {
   if (it.status === 'busy' || it.error) return;
   it.status = 'busy'; render();
   const pdx = pdxFor(it);
-  const r = await call({ kind: 'convert', mdx: it.mdx.slice(), pdx: pdx ? pdx.data.slice() : null, options: options(it), fileName: it.file });
+  const opts = options(it);
+  const tpl = opts.fmMode === 'opm68' ? await flpTemplate() : null;
+  const r = await call({ kind: 'convert', mdx: it.mdx.slice(), pdx: pdx ? pdx.data.slice() : null, options: opts, fileName: it.file, flpTemplate: tpl ? tpl.slice() : null });
   if (r.ok && r.kind === 'convert') { it.result = r; it.status = 'done'; }
   else if (!r.ok) { it.status = 'error'; it.error = r.error; }
   render();
@@ -133,6 +146,7 @@ async function zipAll() {
     if (!it.result) continue;
     files[`${base(it.file)}.mid`] = it.result.midi;
     files[`${base(it.file)}_report.md`] = new TextEncoder().encode(it.result.report);
+    if (it.result.flp) files[`${base(it.file)}.flp`] = it.result.flp;
     for (const b of it.result.opmBanks ?? []) {
       const n = it.result.opmBanks!.length === 1 ? `${base(it.file)}.opm` : `${base(it.file)}_ch${b.label}.opm`;
       files[n] = new TextEncoder().encode(b.text);
@@ -180,7 +194,7 @@ function mdToHtml(md: string): string {
 function render() {
   const list = $('list');
   if (!items.length) {
-    list.innerHTML = pdxPool.size ? `<p class="empty">PDX ${pdxPool.size} 件を読み込みました。MDX を追加してください。</p>` : '';
+    list.innerHTML = customTemplate ? `<p class="empty">FLP テンプレート ${esc(customTemplate.name)} を使います。MDX を追加してください。</p>` : pdxPool.size ? `<p class="empty">PDX ${pdxPool.size} 件を読み込みました。MDX を追加してください。</p>` : '';
   } else {
     list.innerHTML = items.map((it) => {
       const pdx = pdxFor(it);
@@ -192,7 +206,7 @@ function render() {
       const report = r ? `<details class="report"><summary>チャンネル別の音色割り当て</summary><div class="md">${mdToHtml(r.report)}</div></details>` : '';
       const warns = r?.warnings.length ? `<details class="warns"><summary>警告 ${r.warnings.length} 件</summary><ul>${r.warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></details>` : '';
       const btns = it.status === 'done' && r
-        ? `<button data-dl="mid" data-id="${it.id}">.mid</button>${r.sf2 ? `<button data-dl="sf2" data-id="${it.id}" class="secondary">.sf2</button>` : ''}<button data-dl="report" data-id="${it.id}" class="ghost" title="チャンネル別の音色割り当てレポート (Markdown)">レポート.md</button>${r.opmBanks?.length ? `<button data-dl="opm" data-id="${it.id}" class="secondary" title="VOPM 音色バンク (${r.opmVoices} 音色)">${r.opmBanks.length > 1 ? `.opm ×${r.opmBanks.length}` : '.opm'}</button>` : ''}`
+        ? `<button data-dl="mid" data-id="${it.id}">.mid</button>${r.flp ? `<button data-dl="flp" data-id="${it.id}" title="FL Studio プロジェクト (OPM68 ×8、音色埋め込み済み)">.flp</button>` : ''}${r.sf2 ? `<button data-dl="sf2" data-id="${it.id}" class="secondary">.sf2</button>` : ''}<button data-dl="report" data-id="${it.id}" class="ghost" title="チャンネル別の音色割り当てレポート (Markdown)">レポート.md</button>${r.opmBanks?.length ? `<button data-dl="opm" data-id="${it.id}" class="secondary" title="VOPM 音色バンク (${r.opmVoices} 音色)">${r.opmBanks.length > 1 ? `.opm ×${r.opmBanks.length}` : '.opm'}</button>` : ''}`
         : it.status === 'busy' ? '<span class="spin">変換中…</span>'
         : it.status === 'error' ? `<span class="err">${esc(it.error ?? 'エラー')}</span>`
         : `<button data-conv="${it.id}" class="secondary">変換</button>`;
@@ -222,6 +236,7 @@ $('list').addEventListener('click', (e) => {
         if (banks.length === 1) download(`${base(it.file)}.opm`, new TextEncoder().encode(banks[0].text), 'text/plain');
         else download(`${base(it.file)}_opm.zip`, zipSync(Object.fromEntries(banks.map((b) => [`${base(it.file)}_ch${b.label}.opm`, new TextEncoder().encode(b.text)]))), 'application/zip');
       }
+      else if (dl === 'flp' && it.result.flp) download(`${base(it.file)}.flp`, it.result.flp, 'application/octet-stream');
       else if (dl === 'sf2' && it.result.sf2) download(`${base(it.file)}.sf2`, it.result.sf2, 'application/octet-stream');
     }
   }
