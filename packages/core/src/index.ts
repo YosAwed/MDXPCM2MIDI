@@ -9,6 +9,7 @@ export * from './opm.js';
 export * from './report.js';
 export * from './opm68ctl.js';
 export * from './flp.js';
+export * from './flp-arrange.js';
 export { writeSmf, Track } from './smf.js';
 
 import { convertMdx, PDX_SF2_BANK_MELODIC, type ConvertOptions, type ConvertResult } from './convert.js';

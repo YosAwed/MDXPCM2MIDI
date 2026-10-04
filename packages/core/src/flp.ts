@@ -192,12 +192,12 @@ export interface FlpBuildInput {
 }
 export interface FlpBuildResult { flp: Uint8Array; warnings: string[]; notes: number; ppq: number }
 
-const OPM68_ID = 'jp.mdxpcm2midi.opm68';
+export const OPM68_ID = 'jp.mdxpcm2midi.opm68';
 
 const FM_LETTERS = 'ABCDEFGH';
 
 /** FL wrapper chunk: 24-byte header, then records { u32 id, u64 length, data }. */
-function wrapperRecords(d: Uint8Array): { id: number; start: number; data: Uint8Array }[] | null {
+export function wrapperRecords(d: Uint8Array): { id: number; start: number; data: Uint8Array }[] | null {
   if (d.length < 24) return null;
   const out: { id: number; start: number; data: Uint8Array }[] = [];
   let p = 24;
@@ -209,7 +209,7 @@ function wrapperRecords(d: Uint8Array): { id: number; start: number; data: Uint8
   }
   return p === d.length ? out : null;
 }
-function setWrapperRecord(d: Uint8Array, id: number, data: Uint8Array): Uint8Array {
+export function setWrapperRecord(d: Uint8Array, id: number, data: Uint8Array): Uint8Array {
   const recs = wrapperRecords(d)!;
   const parts: Uint8Array[] = [d.subarray(0, 24)];
   for (const r of recs) {
@@ -224,7 +224,7 @@ function setWrapperRecord(d: Uint8Array, id: number, data: Uint8Array): Uint8Arr
 }
 /** Edit a DPF state blob: replace the "bankdata"/"bankfile" state values and set parameters
  *  (key\0value\0 pairs between the __dpf_state_*__ / __dpf_parameters_*__ markers; the 4-byte prefix is kept). */
-function setDpfState(state: Uint8Array, bankText: string, bankFile: string, params: Record<string, string> = {}): Uint8Array | null {
+export function setDpfState(state: Uint8Array, bankText: string, bankFile: string, params: Record<string, string> = {}): Uint8Array | null {
   const enc = new TextEncoder(), dec = new TextDecoder();
   const find = (pat: Uint8Array, from = 0) => {
     outer: for (let i = from; i + pat.length <= state.length; i++) { for (let j = 0; j < pat.length; j++) if (state[i + j] !== pat[j]) continue outer; return i; }
