@@ -89,6 +89,8 @@ interface Ch {
   repeat: Map<number, number>;
   cmdGuard: number;
   visited: Map<number, number>;
+  hwSync: boolean;        // EA with bit 6: reset the chip LFO at every key-on ($0016 bit 1)
+  hwPmsAms: number;       // last EA PMS/AMS byte ($0021), restored by MHON
 }
 
 // ---- MXDRV 2.06 software LFOs (EC pitch / EB amplitude), stepped once per clock ----
@@ -164,7 +166,7 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
     idx, pcm: idx >= 8, pos: off, wait: 0, ended: off >= d.length, syncWait: false, syncPending: false, loops: 0,
     vol: 8, q: 8, keyOnDelay: 0, noKeyOff: false, tiePrev: false, detune: 0, noteDetune: 0, portaNext: 0, porta: 0, portaStop: false, portaAcc: 0,
     bank: 0, freq: 4, curKey: null, offAt: -1, onAt: -1, pendKey: 0, pendNote: 0,
-    plfo: newPitchLfo(), alfo: newAmpLfo(), lfoDelay: 0, lfoDelayCnt: 0, lastPitch: 0, lastAm: 0,
+    plfo: newPitchLfo(), alfo: newAmpLfo(), lfoDelay: 0, lfoDelayCnt: 0, lastPitch: 0, lastAm: 0, hwSync: false, hwPmsAms: 0,
     repeat: new Map(), cmdGuard: 0, visited: new Map(),
   }));
 
@@ -245,6 +247,8 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
       c.curKey = key;
     } else {
       if (c.curKey !== null) keyOff(c, t);
+      // EA sync: MXDRV resets the (chip-wide) OPM LFO when it processes a note that is not tied
+      if (c.hwSync && !c.pcm) events.push({ t, ch: c.idx, type: 'reg', reg: 0x01, data: 0x02 });
       if (c.keyOnDelay > 0 && c.keyOnDelay < len) {
         c.onAt = t + c.keyOnDelay; c.pendKey = key; c.pendNote = note;
       } else {
@@ -379,10 +383,15 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
           }
           break;
         }
-        case 0xea: { // OPM hardware LFO: EA wave LFRQ PMD AMD PMS/AMS
+        case 0xea: { // OPM hardware LFO: EA wave LFRQ PMD AMD PMS/AMS (MHOF = EA 80, MHON = EA 81)
+          // MXDRV writes the chip-wide LFO registers ($1B, $18, $19 x2) and this channel's PMS/AMS ($38+ch)
           const m = u8(p + 1);
-          if (m === 0x80 || m === 0x81) { c.pos = p + 2; break; }
+          const reg = (r: number, d: number) => { if (!c.pcm) events.push({ t, ch: c.idx, type: 'reg', reg: r, data: d }); };
+          if (m & 0x80) { reg(0x38 + c.idx, m & 1 ? c.hwPmsAms : 0); c.pos = p + 2; break; }
           if (!opmLfo) opmLfo = { wave: m & 3, sync: (m >> 6) & 1, lfrq: u8(p + 2), pmd: u8(p + 3) & 0x7f, amd: u8(p + 4) & 0x7f, pms: (u8(p + 5) >> 4) & 7, ams: u8(p + 5) & 3 };
+          c.hwSync = !!(m & 0x40);
+          c.hwPmsAms = u8(p + 5);
+          reg(0x1b, m & 0x3f); reg(0x18, u8(p + 2)); reg(0x19, u8(p + 3)); reg(0x19, u8(p + 4)); reg(0x38 + c.idx, c.hwPmsAms);
           c.pos = p + 6; break;
         }
         case 0xe9:

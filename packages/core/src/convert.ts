@@ -128,7 +128,10 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
     const bad = [...mdx.voices].filter(([, v]) => v.ops.some((o) => o.mul === 0) && !v.ops.every((o) => o.mul <= 7)).map(([n]) => `@${n}`);
     if (bad.length) warnings.push(`MUL=0 を含むが補正できない音色があります (${bad.join(', ')}): VOPM では1オクターブ高く聞こえる可能性`);
   }
-  let opmBank = writeOpmBank(opmVoices, { name: mdx.title, lfo: seq.opmLfo, slots: slotMap });
+  // OPM68 replays every EA / MHON / MHOF as register writes, so its voices carry no LFO;
+  // VOPM can only use the first hardware LFO setting of the song
+  const bankLfo = fmMode === 'opm68' && options.opm68PortaNotes !== false ? null : seq.opmLfo;
+  let opmBank = writeOpmBank(opmVoices, { name: mdx.title, lfo: bankLfo, slots: slotMap });
   let opmBanks: ConvertResult['opmBanks'] = [{ label: 'all', channels: 'ABCDEFGH', text: opmBank, voices: slotMap.size }];
 
   // --- volume baking: collect the (voice, attenuation) pairs each FM channel plays ---
@@ -137,6 +140,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   const quant = new Array(8).fill(1);
   // OPM68 with control notes: the volume goes to the plugin directly, so voices are not multiplied by volume
   const nativeCtl = fmMode === 'opm68' && options.opm68PortaNotes !== false;
+  const usesHwLfo = seq.events.some((e) => e.type === 'reg' && e.reg >= 0x18 && e.reg <= 0x1b);
   const qAtt = (ch: number, att: number) => (nativeCtl ? 0 : Math.min(127, Math.round(att / quant[ch]) * quant[ch]));
   if (bake) {
     const perCh: Set<string>[] = Array.from({ length: 8 }, () => new Set());
@@ -172,14 +176,14 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
     };
     if (all.length <= MAXSLOTS) {
       all.forEach((k, i) => { for (const m of comboSlot) m.set(k, i); });
-      opmBank = writeOpmEntries(all.map(entryFor), { name: mdx.title, lfo: seq.opmLfo });
+      opmBank = writeOpmEntries(all.map(entryFor), { name: mdx.title, lfo: bankLfo });
       opmBanks = [{ label: 'all', channels: 'ABCDEFGH', text: opmBank, voices: all.length }];
     } else {
       opmBanks = [];
       for (let ch = 0; ch < 8; ch++) {
         if (!comboOrder[ch].length) continue;
         comboOrder[ch].forEach((k, i) => comboSlot[ch].set(k, i));
-        const text = writeOpmEntries(comboOrder[ch].map(entryFor), { name: `${mdx.title} ch${CHANNEL_NAMES[ch]}`, lfo: seq.opmLfo });
+        const text = writeOpmEntries(comboOrder[ch].map(entryFor), { name: `${mdx.title} ch${CHANNEL_NAMES[ch]}`, lfo: bankLfo });
         opmBanks.push({ label: CHANNEL_NAMES[ch], channels: CHANNEL_NAMES[ch], text, voices: comboOrder[ch].length });
       }
       opmBank = opmBanks[0]?.text ?? opmBank;
@@ -233,6 +237,8 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
       if (ch < 8) tr.add(0, [0xb0 | mc, 101, 0, 0xb0 | mc, 100, 0, 0xb0 | mc, 6, bendRange, 0xb0 | mc, 38, 0], 1);
       if (bake && ch < 8) tr.add(0, [0xb0 | mc, 7, 127], 1); // volume lives in the voices (or in OPM68 control notes)
       if (nativeCtl && ch < 8) ctl(ch, 0, { k: 'vol', v: VOLTAB[8] }); // MXDRV's initial volume (v8)
+      // one chip LFO in MXDRV, one per OPM68: start them all in phase when the song uses the hardware LFO
+      if (nativeCtl && ch < 8 && usesHwLfo) { ctl(ch, 0, { k: 'reg', r: 0x01, v: 2 }); ctl(ch, 1, { k: 'reg', r: 0x01, v: 0 }); }
       if (fmMode === 'vopm' && ch < 8) {
         // VOPM NRPN #0 = OPM clock (112+ -> 4 MHz), #2 = lowpass filter (0-63 off). Sent before the RPN.
         const clk = options.vopmClock4MHz === false ? 0 : 127;
@@ -264,7 +270,8 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
     const list = m.get(tick) ?? [];
     // one item of a kind per clock: the last one wins, except that an LFO "set" (mode >= 2) keeps its
     // parameters when an on/off follows (on after a set is redundant, off is applied after it)
-    const i = list.findIndex((x) => x.k === it.k && (it.k !== 'reg' || (x.k === 'reg' && x.r === it.r))); // y: one per register
+    // y: one per register ($19 holds two: AMD and PMD, told apart by bit 7)
+    const i = list.findIndex((x) => x.k === it.k && (it.k !== 'reg' || (x.k === 'reg' && x.r === it.r && (it.r !== 0x19 || ((x.v ^ it.v) & 0x80) === 0))));
     const prev = i >= 0 ? list[i] : undefined;
     const isSet = (x?: CtlItem) => !!x && (x.k === 'plfo' || x.k === 'alfo') && x.mode >= 2;
     if (isSet(prev) && (it.k === 'plfo' || it.k === 'alfo') && it.mode < 2) { if (it.mode === 1) return; }
@@ -419,7 +426,12 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
         const { reg, data } = e;
         if (reg === 0x08 || (reg >= 0x10 && reg <= 0x14)) break; // key on/off and timers stay with the driver
         if (reg >= 0x20) ctl(reg & 7, e.t, { k: 'reg', r: reg, v: data });
-        else for (let c = 0; c < 8; c++) if (seq.usedChannels[c]) ctl(c, e.t, { k: 'reg', r: reg, v: data });
+        else for (let c = 0; c < 8; c++) {
+          if (!seq.usedChannels[c]) continue;
+          ctl(c, e.t, { k: 'reg', r: reg, v: data });
+          // LFO reset ($01 bit 1): release it one clock later (OPM68 0.6.2+ pulses it by itself)
+          if (reg === 0x01 && data & 2 && !ctlItems[c].get(e.t + 1)?.some((x) => x.k === 'reg' && x.r === 0x01)) ctl(c, e.t + 1, { k: 'reg', r: 0x01, v: data & ~2 });
+        }
         break;
       }
       case 'amlfo': {

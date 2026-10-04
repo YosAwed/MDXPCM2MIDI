@@ -154,6 +154,17 @@ describe('OPM68 control notes', () => {
     }
     return [...byPos.values()].map((b) => decodePacket(b));
   };
+  it('replays the OPM hardware LFO (EA / MHOF / MHON) as register writes', () => {
+    // @0, EA (sync, triangle) LFRQ $C8 PMD $B2 AMD $00 PMS/AMS $40, note, MHOF, note, MHON, note
+    const src = mdx([0xfd, 0x00, 0xea, 0x42, 0xc8, 0xb2, 0x00, 0x40, 0x90, 24, 0xea, 0x80, 0x90, 24, 0xea, 0x81, 0x90, 24, 0xf1, 0]);
+    const r = convert(src, null, { fmMode: 'opm68' });
+    const regs = packets(r.midi).flat().flatMap((x) => (x.k === 'reg' ? [[x.r, x.v]] : []));
+    // $1B, $18, $19 (PMD and AMD both kept), PMS/AMS, LFO reset (song start / sync key-on) released a clock later
+    expect(regs.slice(0, 7)).toEqual([[0x1b, 2], [0x18, 0xc8], [0x19, 0xb2], [0x19, 0x00], [0x38, 0x40], [0x01, 2], [0x01, 0]]);
+    expect(regs.filter(([rr]) => rr === 0x38).map(([, v]) => v)).toEqual([0x40, 0, 0x40]);
+    expect(regs.filter(([rr, v]) => rr === 0x01 && v === 2).length).toBe(3); // 3 key-ons with sync (the first one at the song start)
+    expect(r.opmBanks[0].text).not.toMatch(/^CH: 64\s+\d+\s+\d+\s+0\s+4/m); // no LFO baked into the voices
+  });
   it('sends the raw portamento value instead of pitch bend', () => {
     const src = mdx([0xfd, 0x00, 0xf2, 0xb0, 0x00, 0xa0, 47, 0xf1, 0]);
     const items = packets(convert(src, null, { fmMode: 'opm68' }).midi).flat();

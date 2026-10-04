@@ -39,6 +39,8 @@ public:
         fRnd = mx::Random(); fNextTick = 0; fLastOnTime = 0;
     }
 
+    int shadow(int reg) const { return fShadow[reg & 0xff]; } // last value written (tests)
+
     // ---- MIDI ----
     int program() const { return fProgram; }
     void programChange(int p) { if (!fVelProg) fProgram = p & 127; }
@@ -123,6 +125,7 @@ public:
         l = out.data[0] / 32768.0f;
         r = out.data[1] / 32768.0f;
         ++fNow;
+        if (fLfoResetClear) { fLfoResetClear = false; write(0x01, 0); }
         resolveControl();
         while ((double)fNow >= fNextTick) { mdxTick(); fNextTick += clockSamples(); }
         for (int c = 0; c < 8; c++) {
@@ -265,7 +268,7 @@ private:
         }
     }
 
-    void write(int reg, int data) { fChip.write_address(reg); fChip.write_data(data & 0xff); }
+    void write(int reg, int data) { fShadow[reg & 0xff] = data & 0xff; fChip.write_address(reg); fChip.write_data(data & 0xff); }
 
     int allocate(int note)
     {
@@ -320,9 +323,23 @@ private:
     /** y command (FE): a direct register write as MXDRV does it on this channel. */
     void regWrite(int reg, int data)
     {
-        if (reg < 0x20) { write(reg, data); return; } // chip-wide (LFO, noise)
+        if (reg < 0x20) { // chip-wide (LFO, noise)
+            write(reg, data);
+            // LFO reset ($01 bit 1, EA sync): MXDRV sets and clears it at once; the chip needs to see it for a sample
+            if (reg == 0x01 && (data & 2)) fLfoResetClear = true;
+            return;
+        }
         const int row = reg & 0xf8;
-        if (row == 0x28 || row == 0x30) { if (fLastOn >= 0) write(row + fLastOn, data); return; } // pitch: rewritten by the driver anyway
+        if (row == 0x28 || row == 0x30) { // pitch: stays until the driver writes it again
+            if (fLastOn < 0) return;
+            write(row + fLastOn, data);
+            if (traceFile()) {
+                static const int idx[16] = { 0, 1, 2, 2, 3, 4, 5, 5, 6, 7, 8, 8, 9, 10, 11, 11 };
+                const int kc = fShadow[0x28 + fLastOn];
+                std::fprintf(traceFile(), "%.6f p %d\n", fNow / chipRate(), ((kc >> 4) * 12 + idx[kc & 15]) * 64 + (fShadow[0x30 + fLastOn] >> 2));
+            }
+            return;
+        }
         fOver[(row - 0x20) >> 3] = data;
         if (fLastOn < 0) return;
         if (row == 0x20 || (row >= 0x60 && row < 0x80)) { fCh[fLastOn].levelKey = -1; applyLevel(fLastOn); }
@@ -331,8 +348,9 @@ private:
     void clearTlOverrides() { for (int r = 0x60; r < 0x80; r += 8) fOver[(r - 0x20) >> 3] = -1; }
     void clearOverrides()
     {
+        // MXDRV's @ rewrites $20 and the operator registers, not PMS/AMS ($38+ch, set by EA / MHON / MHOF)
         bool any = false;
-        for (int& o : fOver) { any |= o >= 0; o = -1; }
+        for (int i = 0; i < 28; i++) { if (i == (0x38 - 0x20) >> 3) continue; any |= fOver[i] >= 0; fOver[i] = -1; }
         if (any) for (auto& ch : fCh) ch.loaded = -2; // chip channels still hold overridden values: reload on next use
     }
 
@@ -402,6 +420,8 @@ private:
     int fCtl[kCtlKeys] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
     uint64_t fCtlAt[kCtlKeys] = {};
     bool fCtlAny = false;
+    bool fLfoResetClear = false;
+    uint8_t fShadow[256] = {};
     int fOver[28] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 }; // y-command register overrides, rows 0x20..0xf8
     int fCurProg = -1;
     bool fLevelDirty = false;

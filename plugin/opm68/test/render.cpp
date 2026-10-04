@@ -11,6 +11,7 @@ int main(int argc, char** argv) {
     OpmBank bank; std::printf("voices %d\n", bank.parse(ss.str()));
     if (getenv("OPMTRACE")) OpmEngine::traceFile() = std::fopen(getenv("OPMTRACE"), "w");
     OpmEngine eng; eng.setBank(bank); eng.setVelocityProgram(argc < 5 || argv[4][0] != '0');
+    eng.setMono(!getenv("OPMPOLY")); // MDX conversions run mono (OPMPOLY=1: 8-voice poly)
     const double sr = 48000, ratio = eng.chipRate() / sr;
     std::ifstream ev(argv[2]); FILE* out = std::fopen(argv[3], "wb");
     long frame = 0, t; int a, b, c; double phase = 1; float pl = 0, pr = 0, cl = 0, cr = 0;
@@ -22,7 +23,9 @@ int main(int argc, char** argv) {
             std::fwrite(s, 4, 2, out);
         }
     };
+    const long stopAt = getenv("OPMDUMP") ? (long)(atof(getenv("OPMDUMP")) * sr) : -1;
     while (ev >> t >> a >> b >> c) {
+        if (stopAt >= 0 && t > stopAt) break;
         advance(t);
         int st = a & 0xf0;
         if (st == 0x90) eng.noteOn(b, c); else if (st == 0x80) eng.noteOff(b);
@@ -30,5 +33,6 @@ int main(int argc, char** argv) {
         else if (st == 0xe0) eng.pitchBend(b | (c << 7));
     }
     advance(frame + 48000);
+    if (getenv("OPMDUMP")) { for (int r = 0x20; r < 0x100; r += 8) std::fprintf(stderr, "%02x:%02x ", r, eng.shadow(r)); std::fprintf(stderr, "\n"); }
     std::fclose(out);
 }

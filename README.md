@@ -83,6 +83,7 @@ node corpus.mjs summary out.jsonl
 - FL Studio で制御ノートが低音として鳴る場合は古いプラグインが残っています。OPM68 の UI の版表記 (v0.6) を確認してください。v0.5 以降の MIDI は v0.4 以前のプラグインでは正しく鳴りません。
 - フェードアウト (E7 / `fadeSeconds`) も制御ノート (FADE) で送ります (v0.6)。パンは CC10 のままです。
 - v0.6 で MXDRV との一致度を上げました: 同じクロックの MP と MPON、タイ (&) で音程を変えるスラー (キーオンしない)、発音中の @、y コマンド (レジスタ直接書き込み、y$12 のテンポ)、制御パケットが溢れたときの遅れ補正、TL 0x80 以上のキャリア、CON 4 のキャリア判定。`tools/mxverify` で 395 曲中 97.6% の FM チャンネルが全クロック一致
+- OPM ハード LFO (EA / MHON / MHOF) は MXDRV と同じレジスタ書き込み ($1B・$18・$19・PMS/AMS $38+ch、同期付きはキーオンで LFO リセット) として制御ノートで送ります。ハード LFO はチップ共通なので、LFRQ/PMD/AMD/波形は全 FM チャンネルの OPM68 に送り、曲頭で全 OPM68 の LFO 位相を揃えます。これには **OPM68 0.6.2 以降**が必要です (@ で PMS/AMS を消さない、LFO リセットのパルス処理)
 
 ### FL Studio プロジェクト (.flp) 出力 (v0.6)
 - OPM68 モードでは `.flp` も作れます (Web UI の「.flp」ボタン / CLI `--flp テンプレート.flp`)。MIDI を読み込んでチャンネルごとに OPM68 へ差し替える手間がなくなります。
@@ -94,7 +95,7 @@ node corpus.mjs summary out.jsonl
 ### VOPM モード (`fmMode: 'vopm'` / CLI `--vopm`)
 
 - MDX の FM 音色を VOPM / MiOPMdrv 形式の `.opm` バンク (128 スロット) に書き出し、プログラムチェンジで切り替えます。オペレータは `.opm` の M1, C1, M2, C2 順に並べ替えます。
-- 曲中で最初に出てくる OPM ハード LFO 設定 (EA) を各音色の `LFO:` / `CH: AMS PMS` に書き込みます。
+- 曲中で最初に出てくる OPM ハード LFO 設定 (EA) を各音色の `LFO:` / `CH: AMS PMS` に書き込みます (VOPM モードのみ。OPM68 モードは制御ノートで MXDRV どおりに再現)。
 - 音量はキャリアの TL に加算した音色として焼き込みます。(音色, 音量) の組が 128 を超える曲は FM チャンネルごとに `.opm` を出力します。`volumeMode: 'cc7' | 'velocity'` も選べます。
 - VOPM の癖への対策: OPM クロックを 4MHz に設定・内蔵ローパスを無効化 (NRPN)、MUL=0 の音色は MUL を倍にして 1 オクターブ下げる、冒頭に 1 小節の無音を入れる。
 - FL Studio では VOPM のプログラムチェンジ・MIDI ch の扱いに問題が多いため、OPM68 モードを推奨します。
