@@ -1,12 +1,13 @@
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
-import { basename, dirname, join, extname } from 'node:path';
-import { convert, formatReport, buildFlp } from './index.js';
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
+import { basename, dirname, join, extname, resolve } from 'node:path';
+import { convert, formatReport, buildFlp, buildFlpArrange, arrangeSamplesFromPdx } from './index.js';
 
 const args = process.argv.slice(2);
 if (!args.length || args.includes('-h')) {
-  console.log('usage: mdx2mid <file.mdx> [-p file.pdx] [-o out.mid] [--loops N] [--fade SEC] [--gm] [--vopm|--opm68] [--flp template.flp] [--json]');
+  console.log('usage: mdx2mid <file.mdx> [-p file.pdx] [-o out.mid] [--loops N] [--fade SEC] [--gm] [--vopm|--opm68] [--flp template.flp] [--flp-arrange template.flp [--sample-root DIR]] [--json]');
   process.exit(0);
 }
+let arrangeTemplate = '', sampleRoot = '';
 let input = '', pdxPath = '', out = '', loops = 2, fade = 0, gm = false, json = false, noPdx = false, vopm = false, opm68 = false, flpTemplate = '';
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
@@ -18,6 +19,8 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--vopm') vopm = true;
   else if (a === '--opm68') { opm68 = true; vopm = true; }
   else if (a === '--flp') { flpTemplate = args[++i]; opm68 = true; vopm = true; }
+  else if (a === '--flp-arrange') { arrangeTemplate = args[++i]; opm68 = true; vopm = true; }
+  else if (a === '--sample-root') sampleRoot = args[++i];
   else if (a === '--no-pdx') noPdx = true;
   else if (a === '--json') json = true;
   else input = a;
@@ -64,6 +67,21 @@ if (!json) {
     const f = buildFlp({ template: new Uint8Array(readFileSync(flpTemplate)), midi: res.midi, banks, title: res.title || basename(input), name: basename(input, extname(input)) });
     writeFileSync(`${stem}.flp`, f.flp);
     res.warnings.push(...f.warnings);
+  }
+  if (arrangeTemplate) {
+    const banks: Record<string, string> = {};
+    for (const b of res.opmBanks) for (const L of b.channels) banks[L] = b.text;
+    const name = basename(input, extname(input));
+    const sdir = `${stem}_samples`;
+    const sep = sampleRoot.includes('\\') ? '\\' : '/';
+    const f = buildFlpArrange({
+      template: new Uint8Array(readFileSync(arrangeTemplate)), midi: res.midi, banks, title: res.title || basename(input), name,
+      samples: arrangeSamplesFromPdx(res.pcmKeys, pdxPath ? new Uint8Array(readFileSync(pdxPath)) : null),
+      samplePath: (file) => (sampleRoot === '.' ? `${basename(sdir)}\\${file}` : sampleRoot ? `${sampleRoot.replace(/[\\/]$/, '')}${sep}${basename(sdir)}${sep}${file}` : resolve(sdir, file)),
+    });
+    writeFileSync(`${stem}_arrange.flp`, f.flp);
+    if (f.wavs.length) { mkdirSync(sdir, { recursive: true }); for (const w of f.wavs) writeFileSync(join(sdir, w.file), w.data); }
+    res.warnings.push(...f.warnings, `arrange: トラック ${f.stats.tracks} / クリップ ${f.stats.clips} / パターン ${f.stats.patterns} / サンプラー ${f.stats.samplers}`);
   }
   writeFileSync(`${stem}_report.md`, formatReport(res, { fileName: basename(input), opmFiles }));
 }
