@@ -270,6 +270,7 @@ describe('FL Studio project (.flp)', async () => {
     const st = f.events.map((e) => dec.decode(e.data)).find((t) => t.includes('bankdata\0//MiOPMdrv'))!;
     expect(st).toContain('__dpf_parameters_begin__\0volume\x000\0velprog\x001\0voice\x000\0mono\x001\0clock4mhz\x001\0');
     expect(st).toContain('__dpf_state_end__\0__dpf_parameters_begin__');
+    expect(st).toContain('bankfile\0test.opm\0'); // one shared bank: the CLI's file name
     expect(cleanTitle('\x1bE\x1b[1mKnight  Arms\r\n')).toBe('Knight Arms');
   });
 });

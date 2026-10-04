@@ -16,7 +16,7 @@ protected:
     const char* getMaker() const override { return "MDXPCM2MIDI"; }
     const char* getHomePage() const override { return "https://github.com/YosAwed/MDXPCM2MIDI"; }
     const char* getLicense() const override { return "BSD-3-Clause"; }
-    uint32_t getVersion() const override { return d_version(0, 6, 2); }
+    uint32_t getVersion() const override { return d_version(0, 6, 3); }
 
     void initParameter(uint32_t index, Parameter& p) override
     {
@@ -61,7 +61,7 @@ protected:
     void initState(uint32_t index, State& s) override
     {
         if (index == kStateBankFile) { s.key = "bankfile"; s.defaultValue = ""; s.label = "OPM bank file"; s.hints = kStateIsFilenamePath; }
-        else { s.key = "bankdata"; s.defaultValue = ""; s.label = "OPM bank data"; s.hints = kStateIsOnlyForDSP; }
+        else { s.key = "bankdata"; s.defaultValue = ""; s.label = "OPM bank data"; s.hints = 0; } // also sent to the UI: banks embedded in a project (.flp) have no file on disk
     }
 
     String getState(const char* key) const override

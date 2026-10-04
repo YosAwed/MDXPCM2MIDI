@@ -358,6 +358,9 @@ export function buildFlp(input: FlpBuildInput): FlpBuildResult {
   ev.splice(pi + 1, pe - pi - 1, ...fresh, ...block);
 
   // --- OPM68 banks
+  // file name shown by OPM68: the converter's own names (one shared bank, or one per channel when > 128 voices)
+  const bankTexts = new Set(Object.values(input.banks));
+  const bankName = (L: string) => `${input.name || 'mdx'}${bankTexts.size > 1 ? `_ch${L}` : ''}.opm`;
   // (indices shifted by the splice: find plugin events again in channel order)
   let chNo = -1;
   for (const e of ev) {
@@ -371,7 +374,7 @@ export function buildFlp(input: FlpBuildInput): FlpBuildResult {
     const st = recs?.find((r) => r.id === 0x35);
     if (!recs?.some((r) => r.id === 0x3a && ascii(r.data, 0, r.data.length) === OPM68_ID) || !st) continue;
     // An MDX channel is one OPM channel: a new key-on cuts the previous note's release, so run OPM68 in mono mode
-    const ns = setDpfState(st.data, text, `${input.name || 'mdx'}_${FM_LETTERS[i]}.opm`, { mono: '1' });
+    const ns = setDpfState(st.data, text, bankName(FM_LETTERS[i]), { mono: '1' });
     if (!ns) { warnings.push(`FM ${FM_LETTERS[i]}: OPM68 の状態形式が想定外のため音色を埋め込めませんでした`); continue; }
     e.data = setWrapperRecord(e.data, 0x35, ns);
     chNo = -1; // one plugin per channel

@@ -41,7 +41,11 @@ protected:
         if (std::strcmp(key, "bankfile") == 0) {
             fFile = value;
             std::ifstream f(value, std::ios::binary);
-            if (f) { std::stringstream ss; ss << f.rdbuf(); fBank.parse(ss.str()); }
+            if (f) { std::stringstream ss; ss << f.rdbuf(); OpmBank b; if (b.parse(ss.str()) > 0) fBank = b; }
+            repaint();
+        } else if (std::strcmp(key, "bankdata") == 0 && value && *value) {
+            // the bank the DSP actually plays (embedded by the converter in .flp projects; the file may not exist)
+            OpmBank b; if (b.parse(value) > 0) fBank = b;
             repaint();
         }
     }
@@ -54,7 +58,7 @@ protected:
         fontSize(20); fillColor(Color(251, 146, 60)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
         text(12, 20, "OPM68", nullptr);
         fontSize(13); fillColor(Color(160, 164, 172));
-        text(84, 21, "YM2151 for MDX  -  ymfm core  -  v0.6.2", nullptr);
+        text(84, 21, "YM2151 for MDX  -  ymfm core  -  v0.6.3", nullptr);
 
         // bank info
         fontSize(13); fillColor(Color(236, 235, 231));
