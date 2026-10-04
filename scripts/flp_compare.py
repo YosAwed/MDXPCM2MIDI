@@ -33,7 +33,7 @@ def flat(path):
     for o in range(0,len(pl),sz):
         pos,base,item,ln,tr=struct.unpack_from('<IHHIH',pl,o)
         P=pats[item-base]
-        for n in P['n']: notes.append((pos+n[0],n[2],n[4],n[3],n[13],n[12]))  # pos ch key len vel pan
+        for n in P['n']: notes.append((pos+n[0],n[2],n[4],n[3],n[11],n[10]))  # pos ch key len vel pan
         for c in P['c']: ctrl.append((pos+c[0],c[3],c[5]))
     return ppq,nch,sorted(notes),sorted(ctrl),chans,len(pl)//sz,len(pats)
 # usage: python3 scripts/flp_compare.py <dir>...  (each dir holds X.flp from --flp and X_arrange.flp from --flp-arrange)
