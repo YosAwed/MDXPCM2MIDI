@@ -255,6 +255,10 @@ describe('FL Studio project (.flp)', async () => {
     expect(notes.filter((n) => n.key >= 15).map((n) => n.key)).toEqual([45, 47, 49]); // MDX note n = MIDI n + 15
     const dec = new TextDecoder();
     expect(f.events.some((e) => e.id === FLP.PluginData && dec.decode(e.data).includes('bankdata\0//MiOPMdrv'))).toBe(true);
+    // the OPM68 that got the bank runs mono (one MDX channel = one OPM channel); parameters stay intact
+    const st = f.events.map((e) => dec.decode(e.data)).find((t) => t.includes('bankdata\0//MiOPMdrv'))!;
+    expect(st).toContain('__dpf_parameters_begin__\0volume\x000\0velprog\x001\0voice\x000\0mono\x001\0clock4mhz\x001\0');
+    expect(st).toContain('__dpf_state_end__\0__dpf_parameters_begin__');
     expect(cleanTitle('\x1bE\x1b[1mKnight  Arms\r\n')).toBe('Knight Arms');
   });
 });

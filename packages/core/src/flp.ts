@@ -222,30 +222,48 @@ function setWrapperRecord(d: Uint8Array, id: number, data: Uint8Array): Uint8Arr
   let p = 0; for (const x of parts) { out.set(x, p); p += x.length; }
   return out;
 }
-/** Replace the "bankdata"/"bankfile" values of a DPF state blob (keeps parameters and the 4-byte prefix). */
-function setDpfBank(state: Uint8Array, bankText: string, bankFile: string): Uint8Array | null {
-  const enc = new TextEncoder();
-  const begin = enc.encode('__dpf_state_begin__\0'), endMark = enc.encode('__dpf_state_end__\0');
+/** Edit a DPF state blob: replace the "bankdata"/"bankfile" state values and set parameters
+ *  (key\0value\0 pairs between the __dpf_state_*__ / __dpf_parameters_*__ markers; the 4-byte prefix is kept). */
+function setDpfState(state: Uint8Array, bankText: string, bankFile: string, params: Record<string, string> = {}): Uint8Array | null {
+  const enc = new TextEncoder(), dec = new TextDecoder();
   const find = (pat: Uint8Array, from = 0) => {
     outer: for (let i = from; i + pat.length <= state.length; i++) { for (let j = 0; j < pat.length; j++) if (state[i + j] !== pat[j]) continue outer; return i; }
     return -1;
   };
-  const b = find(begin), e = find(endMark);
-  if (b < 0 || e < 0) return null;
-  // key\0value\0 pairs between the markers
-  const pairs: [string, string][] = [];
-  const dec = new TextDecoder();
-  let p = b + begin.length;
-  const z = (from: number) => { let i = from; while (i < e && state[i] !== 0) i++; return i; };
-  while (p < e) { const k1 = z(p); const v1 = z(k1 + 1); pairs.push([dec.decode(state.subarray(p, k1)), dec.decode(state.subarray(k1 + 1, v1))]); p = v1 + 1; }
-  const set = (k: string, v: string) => { const i = pairs.findIndex((x) => x[0] === k); if (i >= 0) pairs[i][1] = v; else pairs.push([k, v]); };
-  set('bankdata', bankText.replace(/\0/g, ''));
-  set('bankfile', bankFile);
-  const mid = enc.encode(pairs.map(([k, v]) => `${k}\0${v}\0`).join(''));
-  const out = new Uint8Array(b + begin.length + mid.length + (state.length - e));
-  out.set(state.subarray(0, b + begin.length), 0);
-  out.set(mid, b + begin.length);
-  out.set(state.subarray(e), b + begin.length + mid.length);
+  // returns [start of pairs, end of pairs, pairs] for a marker section
+  const section = (name: string): [number, number, [string, string][]] | null => {
+    const begin = enc.encode(`__dpf_${name}_begin__\0`), endMark = enc.encode(`__dpf_${name}_end__\0`);
+    const b = find(begin), e = b < 0 ? -1 : find(endMark, b);
+    if (b < 0 || e < 0) return null;
+    const pairs: [string, string][] = [];
+    const z = (from: number) => { let i = from; while (i < e && state[i] !== 0) i++; return i; };
+    let p = b + begin.length;
+    while (p < e) { const k1 = z(p); const v1 = z(k1 + 1); pairs.push([dec.decode(state.subarray(p, k1)), dec.decode(state.subarray(k1 + 1, v1))]); p = v1 + 1; }
+    return [b + begin.length, e, pairs];
+  };
+  const set = (pairs: [string, string][], k: string, v: string) => { const i = pairs.findIndex((x) => x[0] === k); if (i >= 0) pairs[i][1] = v; else pairs.push([k, v]); };
+  const st = section('state');
+  if (!st) return null;
+  set(st[2], 'bankdata', bankText.replace(/\0/g, ''));
+  set(st[2], 'bankfile', bankFile);
+  const edits: [number, number, [string, string][]][] = [st];
+  const keys = Object.keys(params);
+  if (keys.length) {
+    const pr = section('parameters');
+    if (!pr) return null;
+    for (const k of keys) set(pr[2], k, params[k]);
+    edits.push(pr);
+  }
+  edits.sort((a, b) => a[0] - b[0]);
+  const parts: Uint8Array[] = [];
+  let last = 0;
+  for (const [s0, e0, pairs] of edits) {
+    parts.push(state.subarray(last, s0), enc.encode(pairs.map(([k, v]) => `${k}\0${v}\0`).join('')));
+    last = e0;
+  }
+  parts.push(state.subarray(last));
+  const out = new Uint8Array(parts.reduce((n, x) => n + x.length, 0));
+  let o = 0; for (const x of parts) { out.set(x, o); o += x.length; }
   return out;
 }
 
@@ -352,7 +370,8 @@ export function buildFlp(input: FlpBuildInput): FlpBuildResult {
     const recs = wrapperRecords(e.data);
     const st = recs?.find((r) => r.id === 0x35);
     if (!recs?.some((r) => r.id === 0x3a && ascii(r.data, 0, r.data.length) === OPM68_ID) || !st) continue;
-    const ns = setDpfBank(st.data, text, `${input.name || 'mdx'}_${FM_LETTERS[i]}.opm`);
+    // An MDX channel is one OPM channel: a new key-on cuts the previous note's release, so run OPM68 in mono mode
+    const ns = setDpfState(st.data, text, `${input.name || 'mdx'}_${FM_LETTERS[i]}.opm`, { mono: '1' });
     if (!ns) { warnings.push(`FM ${FM_LETTERS[i]}: OPM68 の状態形式が想定外のため音色を埋め込めませんでした`); continue; }
     e.data = setWrapperRecord(e.data, 0x35, ns);
     chNo = -1; // one plugin per channel

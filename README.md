@@ -86,7 +86,7 @@ node corpus.mjs summary out.jsonl
 
 ### FL Studio プロジェクト (.flp) 出力 (v0.6)
 - OPM68 モードでは `.flp` も作れます (Web UI の「.flp」ボタン / CLI `--flp テンプレート.flp`)。MIDI を読み込んでチャンネルごとに OPM68 へ差し替える手間がなくなります。
-- テンプレート (`apps/web/public/opm68_template.flp`、FL Studio 2026 で作成) には OPM68 (CLAP) が 8 つ (FM A〜FM H) と sforzando (ADPCM) が入っています。変換器は Pattern 1 にノート・制御ノート・パン (チャンネルパンのイベント) を入れ、各 OPM68 のプラグイン状態に曲の `.opm` を埋め込み、テンポ・タイトル・プレイリスト上の長さを設定します。
+- テンプレート (`apps/web/public/opm68_template.flp`、FL Studio 2026 で作成) には OPM68 (CLAP) が 8 つ (FM A〜FM H) と sforzando (ADPCM) が入っています。変換器は Pattern 1 にノート・制御ノート・パン (チャンネルパンのイベント) を入れ、各 OPM68 のプラグイン状態に曲の `.opm` を埋め込んで **Mono を ON** にし (MDX の 1 チャンネル = OPM の 1 チャンネル。次のキーオンで前の音のリリースが切れる)、テンポ・タイトル・プレイリスト上の長さを設定します。
 - 自分のテンプレートも使えます (Web UI に `.flp` をドロップ)。条件: チャンネル名 `FM A`〜`FM H` (無ければ OPM68 のチャンネルを順に使用)、Pattern 1 がプレイリストに置かれていること。ADPCM は名前に `ADPCM` を含むチャンネルに入ります (SF2 は手動で読み込み)。
 - 曲中でテンポが変わる曲は、FL のテンポを最初の値に固定し、ノート位置を実時間に合わせて配置します (PPQ 960)。OPM68 は制御ノートのテンポ情報で LFO などを刻むので音は変わりません。
 - パン p0 (発音オフ) は .flp では表現できないため無視します。
