@@ -4,10 +4,12 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <cstdlib>
 int main(int argc, char** argv) {
     if (argc < 4) { std::fprintf(stderr, "render bank.opm events.txt out.raw [velprog=1]\n"); return 1; }
     std::ifstream bf(argv[1], std::ios::binary); std::stringstream ss; ss << bf.rdbuf();
     OpmBank bank; std::printf("voices %d\n", bank.parse(ss.str()));
+    if (getenv("OPMTRACE")) OpmEngine::traceFile() = std::fopen(getenv("OPMTRACE"), "w");
     OpmEngine eng; eng.setBank(bank); eng.setVelocityProgram(argc < 5 || argv[4][0] != '0');
     const double sr = 48000, ratio = eng.chipRate() / sr;
     std::ifstream ev(argv[2]); FILE* out = std::fopen(argv[3], "wb");

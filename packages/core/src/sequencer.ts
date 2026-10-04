@@ -11,11 +11,13 @@ export type SeqEvent =
   | { t: number; ch: number; type: 'volume'; att: number } // OPM TL attenuation (0.75 dB steps)
   | { t: number; ch: number; type: 'pan'; pan: number }   // 0 off, 1 L, 2 R, 3 C
   | { t: number; ch: number; type: 'pitch'; semis: number } // offset from note in semitones
-  // nativePitch only: the player applies portamento / detune / pitch LFO itself
-  | { t: number; ch: number; type: 'porta'; perTick: number }   // portamento (1/16384 semitone per clock) for the note starting now
-  | { t: number; ch: number; type: 'retrig'; perTick: number }  // tie: restart portamento and LFO of the held note
-  | { t: number; ch: number; type: 'detune'; value: number }    // 1/64 semitone
-  | { t: number; ch: number; type: 'lfo'; on: boolean; wave: number; period: number; amp: number; delay: number }
+  | { t: number; ch: number; type: 'amlfo'; att: number }  // MXDRV amplitude-LFO attenuation added to the volume (0..127)
+  // nativePitch only: the player runs MXDRV's portamento / detune / LFOs itself
+  | { t: number; ch: number; type: 'porta'; raw: number; keep?: boolean } // F2 value (1/256 KF per clock) for the note (or tie) starting now; keep: stop without resetting the offset
+  | { t: number; ch: number; type: 'detune'; value: number }   // 1/64 semitone
+  | { t: number; ch: number; type: 'plfo'; mode: number; per: number; amp: number } // EC: mode = raw byte (0x80 off / 0x81 on / wave)
+  | { t: number; ch: number; type: 'alfo'; mode: number; per: number; amp: number } // EB
+  | { t: number; ch: number; type: 'lfodelay'; delay: number } // E9
   | { t: number; ch: -1; type: 'tempo'; timerB: number }
   | { t: number; ch: -1; type: 'fade'; speed: number }
   | { t: number; ch: -1; type: 'loopPoint' };
@@ -28,7 +30,7 @@ export interface OpmLfo { wave: number; sync: number; lfrq: number; pmd: number;
 export interface SeqOptions {
   loops?: number;       // how many times looping channels should play the loop body (default 2)
   maxTicks?: number;    // safety cap
-  /** Emit portamento / detune / pitch LFO as parameter events instead of folding them into 'pitch'. */
+  /** Emit portamento / detune / LFO parameters as events instead of folding them into 'pitch' / 'amlfo'. */
   nativePitch?: boolean;
 }
 
@@ -41,8 +43,11 @@ export interface SeqResult {
   pcmKeys: PcmKey[];        // distinct ADPCM (bank,sample,freq) used; noteOn.key indexes into this for PCM channels
   isPcm: boolean[];
   usedChannels: boolean[];
+  /** How often each command byte (>= 0xE0) was executed, keyed by byte. */
+  cmdCounts: Record<number, number>;
 }
 
+const CH_NAME = (i: number) => 'ABCDEFGHPQRSTUVW'[i] ?? String(i);
 const VOLTAB = [0x2a, 0x28, 0x25, 0x22, 0x20, 0x1d, 0x1a, 0x18, 0x15, 0x12, 0x10, 0x0d, 0x0a, 0x08, 0x05, 0x02];
 /** MDX note 0 == o0 d+ ; o4a = 440Hz = MIDI 69. */
 export const MDX_NOTE_TO_MIDI = 15;
@@ -61,10 +66,12 @@ interface Ch {
   keyOnDelay: number;
   noKeyOff: boolean;      // F7 seen: next note's key-off disabled
   tiePrev: boolean;       // previous note had its key-off disabled
-  detune: number;         // 1/64 semitone
-  portaNext: number;      // pending portamento (1/16384 semitone per tick)
-  porta: number;
-  portaAcc: number;
+  detune: number;         // 1/64 semitone (F3)
+  noteDetune: number;     // detune latched by the last note command ($0012)
+  portaNext: number;      // pending portamento (F2 value: 1/256 KF per clock)
+  porta: number;          // active for the current note until the next command fetch
+  portaStop: boolean;
+  portaAcc: number;       // 1/65536 KF (MXDRV $000c)
   bank: number;
   freq: number;
   curKey: number | null;  // MIDI key (FM) or PCM key index
@@ -72,18 +79,76 @@ interface Ch {
   onAt: number;           // pending delayed key-on tick (-1: none)
   pendKey: number;
   pendNote: number;
-  lfo: { wave: number; period: number; amp: number; on: boolean; phase: number; delay: number; delayCnt: number };
+  plfo: PitchLfo;
+  alfo: AmpLfo;
+  lfoDelay: number;       // E9 ($0024)
+  lfoDelayCnt: number;    // $0025
   lastPitch: number;
+  lastAm: number;
   repeat: Map<number, number>;
   cmdGuard: number;
   visited: Map<number, number>;
 }
+
+// ---- MXDRV 2.06 software LFOs (EC pitch / EB amplitude), stepped once per clock ----
+export interface PitchLfo { on: boolean; wave: number; per: number; perInit: number; delta0: number; init: number; cnt: number; delta: number; val: number }
+export interface AmpLfo { on: boolean; wave: number; per: number; delta0: number; init: number; cnt: number; delta: number; val: number }
+export const newPitchLfo = (): PitchLfo => ({ on: false, wave: 0, per: 0, perInit: 0, delta0: 0, init: 0, cnt: 0, delta: 0, val: 0 });
+export const newAmpLfo = (): AmpLfo => ({ on: false, wave: 0, per: 0, delta0: 0, init: 0, cnt: 0, delta: 0, val: 0 });
+const w16 = (v: number) => { v &= 0xffff; return v & 0x8000 ? v - 0x10000 : v; };
+/** MXDRV's LFO random generator (shared by all channels). */
+export class MxRandom {
+  seed = 0x1234;
+  next(): number { const d0 = (this.seed * 0xc549 + 0x0c) >>> 0; this.seed = d0 & 0xffff; return d0 >>> 8; }
+}
+/** EC command. `m` is the mode byte (0x80 = MPOF, 0x81 = MPON, else wave (+4: amplitude x256)). */
+export function setPitchLfo(l: PitchLfo, m: number, per: number, amp: number) {
+  if (m & 0x80) { if (m & 1) { l.on = true; resetPitchLfo(l); } else { l.on = false; l.val = 0; } return; }
+  const wave = m & 3;
+  l.on = true; l.wave = wave; l.per = per & 0xffff;
+  l.perInit = wave === 1 ? l.per : wave === 3 ? 1 : l.per >> 1;
+  let d = w16(amp) * 256; if (m >= 4) d *= 256;
+  l.delta0 = d | 0; l.init = wave === 2 ? l.delta0 : 0;
+  resetPitchLfo(l);
+}
+export function resetPitchLfo(l: PitchLfo) { l.cnt = l.perInit; l.delta = l.delta0; l.val = l.init; }
+export function stepPitchLfo(l: PitchLfo, rnd: MxRandom) {
+  const dec = () => { l.cnt = (l.cnt - 1) & 0xffff; return l.cnt === 0; };
+  switch (l.wave) {
+    case 0: l.val = (l.val + l.delta) | 0; if (dec()) { l.cnt = l.per; l.val = -l.val | 0; } break;          // sawtooth
+    case 1: l.val = l.delta; if (dec()) { l.cnt = l.per; l.delta = -l.delta | 0; } break;                   // square
+    case 2: l.val = (l.val + l.delta) | 0; if (dec()) { l.cnt = l.per; l.delta = -l.delta | 0; } break;     // triangle
+    default: if (dec()) { l.val = Math.imul(w16(rnd.next()), w16(l.delta)); l.cnt = l.per; }                // random
+  }
+}
+/** EB command. */
+export function setAmpLfo(l: AmpLfo, m: number, per: number, amp: number) {
+  if (m & 0x80) { if (m & 1) { l.on = true; resetAmpLfo(l); } else { l.on = false; l.val = 0; } return; }
+  const wave = m & 3;
+  l.on = true; l.wave = wave; l.per = per & 0xffff; l.delta0 = w16(amp);
+  const x = w16(wave & 1 ? -l.delta0 : -Math.imul(l.delta0, w16(per)));
+  l.init = x < 0 ? 0 : x;
+  resetAmpLfo(l);
+}
+export function resetAmpLfo(l: AmpLfo) { l.cnt = l.per; l.delta = l.delta0; l.val = l.init; }
+export function stepAmpLfo(l: AmpLfo, rnd: MxRandom) {
+  const dec = () => { l.cnt = (l.cnt - 1) & 0xffff; return l.cnt === 0; };
+  switch (l.wave) {
+    case 0: l.val = w16(l.val + l.delta); if (dec()) { l.cnt = l.per; l.val = l.init; } break;
+    case 1: if (dec()) { l.cnt = l.per; l.val = w16(l.val + l.delta); l.delta = w16(-l.delta); } break;
+    case 2: l.val = w16(l.val + l.delta); if (dec()) { l.cnt = l.per; l.delta = w16(-l.delta); } break;
+    default: if (dec()) { l.val = w16(Math.imul(l.delta, w16(rnd.next()))); l.cnt = l.per; }
+  }
+}
+/** Attenuation the amplitude LFO adds to the volume (MXDRV adds the high byte; overflow mutes). */
+export const amLfoAtt = (l: AmpLfo) => (l.on ? (l.val >> 8) & 0xff : 0);
 
 export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
   const d = mdx.data;
   const loopsWanted = Math.max(1, opts.loops ?? 2);
   const maxTicks = opts.maxTicks ?? 48 * 4 * 1200; // ~1200 bars
   const portaEv = opts.nativePitch === true;
+  const cmdCounts: Record<number, number> = {};
   const events: SeqEvent[] = [];
   const warnings: string[] = [];
   const warnOnce = new Set<string>();
@@ -96,9 +161,9 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
 
   const chs: Ch[] = mdx.channelOffsets.map((off, idx) => ({
     idx, pcm: idx >= 8, pos: off, wait: 0, ended: off >= d.length, syncWait: false, syncPending: false, loops: 0,
-    vol: 8, q: 8, keyOnDelay: 0, noKeyOff: false, tiePrev: false, detune: 0, portaNext: 0, porta: 0, portaAcc: 0,
+    vol: 8, q: 8, keyOnDelay: 0, noKeyOff: false, tiePrev: false, detune: 0, noteDetune: 0, portaNext: 0, porta: 0, portaStop: false, portaAcc: 0,
     bank: 0, freq: 4, curKey: null, offAt: -1, onAt: -1, pendKey: 0, pendNote: 0,
-    lfo: { wave: 0, period: 0, amp: 0, on: false, phase: 0, delay: 0, delayCnt: 0 }, lastPitch: 0,
+    plfo: newPitchLfo(), alfo: newAmpLfo(), lfoDelay: 0, lfoDelayCnt: 0, lastPitch: 0, lastAm: 0,
     repeat: new Map(), cmdGuard: 0, visited: new Map(),
   }));
 
@@ -119,6 +184,29 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
     }
   };
 
+  const pushPorta = (c: Ch) => {
+    replaceSameTick(c.idx, 'porta');
+    events.push({ t, ch: c.idx, type: 'porta', raw: c.porta });
+  };
+  /** Drop an earlier event of the same kind for this channel in the current clock (one control note per key and time). */
+  const replaceSameTick = (ch: number, type: SeqEvent['type']) => {
+    for (let i = events.length - 1; i >= 0 && events[i].t === t; i--) {
+      if (events[i].ch === ch && events[i].type === type) { events.splice(i, 1); break; }
+    }
+  };
+  /** Key-on (not a tie): with an LFO delay set, MXDRV zeroes both LFOs and restarts them after the delay. */
+  const lfoKeyOn = (c: Ch) => {
+    if (c.pcm) return;
+    c.lfoDelayCnt = c.lfoDelay;
+    if (c.lfoDelay === 0) return;
+    c.plfo.val = 0; c.alfo.val = 0;
+    lfoDelayTick(c);
+  };
+  const lfoDelayTick = (c: Ch) => {
+    c.lfoDelayCnt = (c.lfoDelayCnt - 1) & 0xff;
+    if (c.lfoDelayCnt === 0) { if (c.plfo.on) resetPitchLfo(c.plfo); if (c.alfo.on) resetAmpLfo(c.alfo); }
+  };
+
   const doNote = (c: Ch, note: number, len: number) => {
     used[c.idx] = true;
     let key: number;
@@ -136,22 +224,27 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
     else gate = Math.max(1, len - (256 - c.q));
     const thisNoKeyOff = c.noKeyOff;
     c.noKeyOff = false;
-    // portamento
-    const hadPorta = c.porta !== 0;
+    // portamento: MXDRV clears the accumulated offset on every note command (ties included)
+    const hadPorta = c.portaAcc !== 0 || c.porta !== 0 || c.portaStop;
+    c.portaStop = false;
+    if (!c.pcm && c.detune !== c.noteDetune) {
+      c.noteDetune = c.detune;
+      if (portaEv) { replaceSameTick(c.idx, 'detune'); events.push({ t, ch: c.idx, type: 'detune', value: c.detune }); }
+    }
     c.porta = c.portaNext; c.portaNext = 0; c.portaAcc = 0;
-    c.lfo.delayCnt = c.lfo.delay; c.lfo.phase = 0;
 
     if (c.tiePrev && !c.pcm && c.curKey === key) {
-      // tie: keep the note sounding (the portamento offset restarts from the note)
-      if (portaEv && (c.porta !== 0 || hadPorta || c.lfo.on)) events.push({ t, ch: c.idx, type: 'retrig', perTick: c.porta });
+      // tie: keep the note sounding; LFOs keep running
+      if (portaEv && (c.porta !== 0 || hadPorta)) pushPorta(c);
     } else {
       if (c.curKey !== null) keyOff(c, t);
       if (c.keyOnDelay > 0 && c.keyOnDelay < len) {
         c.onAt = t + c.keyOnDelay; c.pendKey = key; c.pendNote = note;
       } else {
         events.push({ t, ch: c.idx, type: 'noteOn', note, key });
-        if (portaEv && c.porta !== 0) events.push({ t, ch: c.idx, type: 'porta', perTick: c.porta });
+        if (portaEv && c.porta !== 0) pushPorta(c);
         c.curKey = key;
+        lfoKeyOn(c);
       }
     }
     c.tiePrev = thisNoKeyOff;
@@ -162,11 +255,16 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
   const step = (c: Ch) => {
     // execute commands until something consumes time
     let guard = 0;
+    if (!c.ended && !c.syncWait && c.wait === 0) { // MXDRV drops the portamento flag when it fetches the next command
+      if (c.porta) c.portaStop = true;
+      c.porta = 0;
+    }
     while (!c.ended && !c.syncWait && c.wait === 0) {
       if (++guard > 20000) { warn(`ch ${c.idx}: 時間を消費しない無限ループを検出したため停止`); c.ended = true; break; }
       const p = c.pos;
       if (p >= d.length) { warn(`ch ${c.idx}: データ終端を越えた`); c.ended = true; break; }
       const cmd = d[p];
+      if (cmd >= 0xe0) cmdCounts[cmd] = (cmdCounts[cmd] ?? 0) + 1;
       if (!c.visited.has(p)) c.visited.set(p, t);
       if (cmd <= 0x7f) { // rest
         if (c.curKey !== null) keyOff(c, t);
@@ -229,16 +327,7 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
           c.pos = p + 3;
           break;
         }
-        case 0xf3: {
-          const dt = s16(p + 1);
-          if (portaEv && dt !== c.detune) {
-            for (let i = events.length - 1; i >= 0 && events[i].t === t; i--) {
-              if (events[i].ch === c.idx && events[i].type === 'detune') { events.splice(i, 1); break; }
-            }
-            events.push({ t, ch: c.idx, type: 'detune', value: dt });
-          }
-          c.detune = dt; c.pos = p + 3; break;
-        }
+        case 0xf3: c.detune = s16(p + 1); c.pos = p + 3; break; // takes effect from the next note command
         case 0xf2: c.portaNext = s16(p + 1); c.pos = p + 3; break;
         case 0xf1: {
           if (u8(p + 1) === 0) { c.ended = true; keyOff(c, t); c.pos = p + 2; break; }
@@ -259,17 +348,18 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
           if (c.syncPending) c.syncPending = false; else c.syncWait = true;
           break;
         case 0xed: if (c.pcm) c.freq = u8(p + 1); c.pos = p + 2; break; // FM ch: noise freq (ignored)
-        case 0xec: { // pitch LFO
+        case 0xec: case 0xeb: { // pitch / amplitude LFO
           const m = u8(p + 1);
-          if (m === 0x80) { c.lfo.on = false; c.pos = p + 2; }
-          else if (m === 0x81) { c.lfo.on = true; c.pos = p + 2; }
-          else { c.lfo.wave = m & 3; c.lfo.period = (u8(p + 2) << 8) | u8(p + 3); c.lfo.amp = s16(p + 4); c.lfo.on = true; c.pos = p + 6; }
-          emitLfo(c);
+          const per = m & 0x80 ? 0 : (u8(p + 2) << 8) | u8(p + 3), amp = m & 0x80 ? 0 : s16(p + 4);
+          c.pos = m & 0x80 ? p + 2 : p + 6;
+          if (c.pcm) break;
+          if (cmd === 0xec) setPitchLfo(c.plfo, m, per, amp); else setAmpLfo(c.alfo, m, per, amp);
+          if (portaEv) {
+            const type = cmd === 0xec ? 'plfo' : 'alfo';
+            replaceSameTick(c.idx, type);
+            events.push({ t, ch: c.idx, type, mode: m, per, amp });
+          }
           break;
-        }
-        case 0xeb: { // amplitude LFO (ignored for now)
-          const m = u8(p + 1);
-          c.pos = (m === 0x80 || m === 0x81) ? p + 2 : p + 6; break;
         }
         case 0xea: { // OPM hardware LFO: EA wave LFRQ PMD AMD PMS/AMS
           const m = u8(p + 1);
@@ -277,59 +367,54 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
           if (!opmLfo) opmLfo = { wave: m & 3, sync: (m >> 6) & 1, lfrq: u8(p + 2), pmd: u8(p + 3) & 0x7f, amd: u8(p + 4) & 0x7f, pms: (u8(p + 5) >> 4) & 7, ams: u8(p + 5) & 3 };
           c.pos = p + 6; break;
         }
-        case 0xe9: c.lfo.delay = u8(p + 1); c.pos = p + 2; emitLfo(c); break;
+        case 0xe9:
+          c.lfoDelay = u8(p + 1); c.pos = p + 2;
+          if (portaEv && !c.pcm) { replaceSameTick(c.idx, 'lfodelay'); events.push({ t, ch: c.idx, type: 'lfodelay', delay: c.lfoDelay }); }
+          break;
         case 0xe8: c.pos = p + 1; break; // PCM8 mode enable
         case 0xe7: { // fade out: E7 01 speed
           events.push({ t, ch: -1, type: 'fade', speed: u8(p + 2) });
           c.pos = p + 3; break;
         }
         default:
-          warn(`ch ${c.idx}: 未知のコマンド 0x${cmd.toString(16)} @0x${p.toString(16)} — チャンネル停止`);
+          // MXDRV 2.06 treats E0-E6 (undefined) like the end of the track
+          warn(`ch ${CH_NAME(c.idx)}: MXDRV 2.06 では未定義のコマンド 0x${cmd.toString(16).toUpperCase()} (オフセット 0x${p.toString(16)}) — MXDRV と同じくこのチャンネルを終了`);
           c.ended = true;
       }
     }
+    if (c.portaStop) { // the fetched command was not a note: the portamento stops where it is
+      c.portaStop = false;
+      if (portaEv && !c.pcm) { replaceSameTick(c.idx, 'porta'); events.push({ t, ch: c.idx, type: 'porta', raw: 0, keep: true }); }
+    }
   };
 
-  const lastLfo = new Map<number, string>();
-  function emitLfo(c: Ch) {
-    if (!portaEv || c.pcm) return;
-    const l = c.lfo, k = `${l.on}|${l.wave}|${l.period}|${l.amp}|${l.delay}`;
-    if (lastLfo.get(c.idx) === k) return;
-    lastLfo.set(c.idx, k);
-    // several LFO commands in the same clock collapse into one event (one control note per key and time)
-    for (let i = events.length - 1; i >= 0 && events[i].t === t; i--) {
-      const x = events[i];
-      if (x.ch === c.idx && x.type === 'lfo') { events.splice(i, 1); break; }
+  const rnd = new MxRandom();
+  /** Pitch offset in 1/64 semitone, as MXDRV computes it (integer KF). */
+  const pitchKf = (c: Ch) => c.noteDetune + (portaEv ? 0 : (c.portaAcc >> 16)) + (portaEv ? 0 : (c.plfo.val >> 16));
+  /** Per-clock modulation, done before the channel's commands like MXDRV's L001050. */
+  const modulate = (c: Ch) => {
+    if (c.pcm || c.ended) return;
+    const keyOnPending = c.onAt > t;
+    if (c.porta && !keyOnPending) c.portaAcc = (c.portaAcc + c.porta * 256) | 0;
+    if (c.lfoDelay !== 0) {
+      if (keyOnPending) return;
+      if (c.lfoDelayCnt !== 0) { lfoDelayTick(c); return; }
     }
-    events.push({ t, ch: c.idx, type: 'lfo', on: l.on, wave: l.wave, period: l.period, amp: l.amp, delay: l.delay });
-  }
-
-  const pitchOf = (c: Ch): number => {
-    let semis = c.detune / 64 + (portaEv ? 0 : c.portaAcc / 16384);
-    if (c.lfo.on && c.lfo.period > 0 && c.lfo.delayCnt <= 0 && c.curKey !== null) {
-      const per = c.lfo.period, ph = c.lfo.phase % (per * 4);
-      const a = c.lfo.amp / 16384; // amplitude: per-tick delta (same unit as portamento)
-      let v: number;
-      switch (c.lfo.wave) {
-        case 0: v = a * ((ph % per) - per / 2); break;            // sawtooth
-        case 1: v = ((Math.floor(ph / per) & 1) ? -1 : 1) * a * per / 2; break; // square
-        case 2: { const x = ph % (per * 2); v = a * (x < per ? x : 2 * per - x) - a * per / 2; break; } // triangle
-        default: v = 0;
-      }
-      semis += v;
-    }
-    return semis;
+    if (c.plfo.on) stepPitchLfo(c.plfo, rnd);
+    if (c.alfo.on) stepAmpLfo(c.alfo, rnd);
   };
 
   const allDone = () => chs.every((c) => c.ended || c.loops >= loopsWanted);
   while (t < maxTicks) {
+    for (const c of chs) modulate(c);
     // key-offs and delayed key-ons scheduled for this tick
     for (const c of chs) {
       if (c.offAt === t) { keyOff(c, t); c.offAt = -1; }
       if (c.onAt === t) {
         events.push({ t, ch: c.idx, type: 'noteOn', note: c.pendNote, key: c.pendKey });
-        if (portaEv && c.porta !== 0) events.push({ t, ch: c.idx, type: 'porta', perTick: c.porta });
+        if (portaEv && c.porta !== 0) pushPorta(c);
         c.curKey = c.pendKey; c.onAt = -1;
+        lfoKeyOn(c);
       }
     }
     for (const c of chs) step(c);
@@ -341,13 +426,13 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
       if (chs.some((c) => c.syncWait)) warn('同期待ち(EE)のまま全チャンネルが停止');
       break;
     }
-    // per-tick modulation
-    for (const c of chs) {
-      if (c.pcm || c.curKey === null) continue;
-      if (c.porta) c.portaAcc += c.porta;
-      if (c.lfo.on) { if (c.lfo.delayCnt > 0) c.lfo.delayCnt--; else c.lfo.phase++; }
-      const p = Math.round(pitchOf(c) * 4096) / 4096;
-      if (!portaEv && p !== c.lastPitch) { events.push({ t, ch: c.idx, type: 'pitch', semis: p }); c.lastPitch = p; }
+    // resulting pitch / amplitude-LFO offsets for this clock
+    if (!portaEv) for (const c of chs) {
+      if (c.pcm) continue;
+      const p = pitchKf(c) / 64;
+      if (p !== c.lastPitch) { events.push({ t, ch: c.idx, type: 'pitch', semis: p }); c.lastPitch = p; }
+      const a = amLfoAtt(c.alfo);
+      if (a !== c.lastAm) { events.push({ t, ch: c.idx, type: 'amlfo', att: a }); c.lastAm = a; }
     }
     t++;
     for (const c of chs) if (c.wait > 0) c.wait--;
@@ -356,5 +441,5 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
   for (const c of chs) keyOff(c, t);
   if (loopTick !== null) events.push({ t: loopTick, ch: -1, type: 'loopPoint' });
   events.sort((a, b) => a.t - b.t);
-  return { events, endTick: t, loopTick, warnings, opmLfo, pcmKeys, isPcm, usedChannels: used };
+  return { events, endTick: t, loopTick, warnings, opmLfo, pcmKeys, isPcm, usedChannels: used, cmdCounts };
 }

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { parseMdx, sequence, convert, parsePdx, decodeAdpcm, writeSf2 } from '../src/index.js';
+import { packControl, decodePacket, type CtlItem } from '../src/opm68ctl.js';
+import { newPitchLfo, newAmpLfo, setPitchLfo, setAmpLfo, stepPitchLfo, stepAmpLfo, amLfoAtt, MxRandom } from '../src/sequencer.js';
 
 /** Build a minimal 9-channel MDX. Channel A gets `chA`, others just end. */
 function mdx(chA: number[], title = 'TEST', pdx = ''): Uint8Array {
@@ -137,26 +139,75 @@ describe('VOPM MUL=0 fix', () => {
   });
 });
 
-describe('OPM68 pitch control notes', () => {
-  const ctls = (m: Uint8Array) => { const a = Array.from(m); return a.map((b, k) => (b === 0x90 && a[k + 1] < 14 ? [a[k + 1], a[k + 2] - 1] : null)).filter((x): x is number[] => !!x); };
-  const v14 = (c: number[][], k: number) => c.find((x) => x[0] === k)![1] * 127 + c.find((x) => x[0] === k + 1)![1];
-  const tick = 12288 * 56 / 48 / 1e6; // tempo 200
-  it('sends portamento as control notes 0/1 instead of pitch bend', () => {
-    const src = mdx([0xfd, 0x00, 0xf2, 0x04, 0x00, 0xa0, 47, 0xf1, 0]);
-    const c = ctls(convert(src, null, { fmMode: 'opm68' }).midi);
-    expect((v14(c, 0) - 8064) / 32).toBeCloseTo(1 / 16 / tick, 1);
+describe('OPM68 control notes', () => {
+  /** Control packets (tick -> decoded items) from an opm68 MIDI. */
+  const packets = (m: Uint8Array) => {
+    const a = Array.from(m); const byPos = new Map<number, number[]>();
+    // scan note-ons on keys < 15 in order; packets are contiguous runs starting with key 0
+    let cur: number[] | null = null; const out: CtlItem[][] = [];
+    for (let k = 0; k + 2 < a.length; k++) {
+      if ((a[k] & 0xf0) === 0x90 && a[k + 1] < 15 && a[k + 2] > 0) {
+        const key = a[k + 1], v = a[k + 2] - 1;
+        if (key === 0) { cur = [v]; byPos.set(out.length, cur); out.push([]); }
+        else if (cur) cur[key] = v;
+      }
+    }
+    return [...byPos.values()].map((b) => decodePacket(b));
+  };
+  it('sends the raw portamento value instead of pitch bend', () => {
+    const src = mdx([0xfd, 0x00, 0xf2, 0xb0, 0x00, 0xa0, 47, 0xf1, 0]);
+    const items = packets(convert(src, null, { fmMode: 'opm68' }).midi).flat();
+    expect(items).toContainEqual({ k: 'porta', v: -0x5000 });
     const bends = (m: Uint8Array) => Array.from(m).filter((b) => b === 0xe0).length;
     expect(bends(convert(src, null, { fmMode: 'opm68', opm68PortaNotes: false }).midi)).toBeGreaterThan(bends(convert(src, null, { fmMode: 'opm68' }).midi) + 5);
   });
-  it('sends detune and pitch LFO parameters', () => {
-    // F3 detune +32 (half a semitone), EC triangle period 8 amp 0x200, E9 delay 4
-    const src = mdx([0xff, 200, 0xfd, 0x00, 0xf3, 0x00, 0x20, 0xec, 0x02, 0x00, 0x08, 0x02, 0x00, 0xe9, 4, 0xa0, 47, 0xf1, 0]);
-    const c = ctls(convert(src, null, { fmMode: 'opm68' }).midi);
-    expect((v14(c, 2) - 8064) / 64).toBe(0.5);
-    expect(c.find((x) => x[0] === 4)![1]).toBe(3);
-    expect(v14(c, 5)).toBe(8);
-    expect(v14(c, 12) * 4e-6).toBeCloseTo(tick, 4);
-    expect((v14(c, 7) - 8064) / 256).toBeCloseTo((0x200 / 16384) * 4, 2);
-    expect(v14(c, 9)).toBe(4);
+  it('sends detune, both LFOs, delay, clock and volume', () => {
+    // FF 200, F3 +32, EC tri per 8 amp 0x200, EB saw per 4 amp 0x100, E9 4, FB v12
+    const src = mdx([0xff, 200, 0xfd, 0x00, 0xf3, 0x00, 0x20, 0xec, 0x02, 0x00, 0x08, 0x02, 0x00, 0xeb, 0x00, 0x00, 0x04, 0x01, 0x00, 0xe9, 4, 0xfb, 12, 0xa0, 47, 0xf1, 0]);
+    const items = packets(convert(src, null, { fmMode: 'opm68' }).midi).flat();
+    expect(items).toContainEqual({ k: 'detune', v: 32 });
+    expect(items).toContainEqual({ k: 'plfo', mode: 4, per: 8, amp: 0x200 });
+    expect(items).toContainEqual({ k: 'alfo', mode: 2, per: 4, amp: 0x100 });
+    expect(items).toContainEqual({ k: 'delay', v: 4 });
+    expect(items).toContainEqual({ k: 'clock', v: 56 });
+    expect(items.filter((x) => x.k === 'vol')).toEqual([{ k: 'vol', v: 0x0a }]); // v8 then v12 in the same clock: the last wins
+  });
+  it('keeps low notes as they are (control keys stay below MIDI 15)', () => {
+    const r = convert(mdx([0xfd, 0x00, 0x80, 47, 0xf1, 0]), null, { fmMode: 'opm68' });
+    const a = Array.from(r.midi);
+    expect(a.some((b, k) => b === 0x90 && a[k + 1] === 15 && a[k + 2] === 1)).toBe(true);
+  });
+  it('splits packets that do not fit into the next clock', () => {
+    const m = new Map<number, CtlItem[]>([[0, [
+      { k: 'plfo', mode: 2, per: 30000, amp: -30000 }, { k: 'alfo', mode: 3, per: 30000, amp: 30000 },
+      { k: 'detune', v: -5 }, { k: 'clock', v: 56 }, { k: 'vol', v: 21 }, { k: 'delay', v: 200 },
+    ]]]);
+    const p = packControl(m);
+    expect([...p.keys()]).toEqual([0, 1]);
+    for (const b of p.values()) expect(b.length).toBeLessThanOrEqual(15);
+    expect([...p.values()].flatMap((b) => decodePacket(b)).map((x) => x.k).sort()).toEqual(['alfo', 'clock', 'delay', 'detune', 'plfo', 'vol']);
+  });
+});
+
+describe('MXDRV LFO model', () => {
+  it('pitch LFO triangle starts at +delta and turns after per/2 clocks', () => {
+    const l = newPitchLfo(); const r = new MxRandom();
+    setPitchLfo(l, 2, 4, 0x100); // delta = 1 KF per clock
+    const kf: number[] = [];
+    for (let i = 0; i < 8; i++) { stepPitchLfo(l, r); kf.push(l.val >> 16); }
+    expect(kf).toEqual([2, 3, 2, 1, 0, -1, 0, 1]);
+  });
+  it('amplitude LFO sawtooth ramps the attenuation and restarts', () => {
+    const l = newAmpLfo(); const r = new MxRandom();
+    setAmpLfo(l, 0, 4, 0x400); // +4 TL per clock, restart every 4 clocks
+    const att: number[] = [];
+    for (let i = 0; i < 8; i++) { stepAmpLfo(l, r); att.push(amLfoAtt(l)); }
+    expect(att).toEqual([4, 8, 12, 0, 4, 8, 12, 0]);
+  });
+  it('emits the amplitude LFO as expression (CC11) outside OPM68', () => {
+    const r = convert(mdx([0xfd, 0x00, 0xeb, 0x00, 0x00, 0x04, 0x04, 0x00, 0xa0, 47, 0xf1, 0]), null, { fmMode: 'vopm' });
+    const a = Array.from(r.midi);
+    const cc11 = a.map((b, k) => (b === 0xb0 && a[k + 1] === 11 ? a[k + 2] : -1)).filter((x) => x >= 0);
+    expect(new Set(cc11).size).toBeGreaterThan(3);
   });
 });

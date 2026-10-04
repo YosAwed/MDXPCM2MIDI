@@ -1,13 +1,17 @@
 // YM2151 (ymfm) driven by MIDI, with MXDRV-compatible pitch and volume.
 #pragma once
 #include "OpmBank.hpp"
+#include "MxLfo.hpp"
 #include "ymfm/ymfm_opm.h"
 #include <cmath>
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 
 class OpmEngine {
 public:
+    /** Test hook: when set, pitch codes and carrier attenuations are logged as "sec kind value". */
+    static FILE*& traceFile() { static FILE* f = nullptr; return f; }
     struct Chip : ymfm::ymfm_interface {};
 
     OpmEngine() : fChip(fIntf) { reset(); }
@@ -31,7 +35,8 @@ public:
         fProgram = 0; fVol = 127; fExpr = 127; fPan = 64; fBend = 0; fBendRange = fDefaultBend;
         fRpnMsb = fRpnLsb = 127; fAge = 0;
         fLfoVoice = -1; fLastOn = -1; fCtlAny = false; for (int& x : fCtl) x = -1;
-        fDetune = 0; fLfoWave = 0; fLfoPeriod = fLfoDepth = fLfoDelay = 0;
+        fPorta = 0; fPortaAcc = 0; fDetuneKf = 0; fVolAtt = 0; fPLfo = mx::PitchLfo(); fALfo = mx::AmpLfo(); fDelay = fDelayCnt = 0;
+        fRnd = mx::Random(); fNextTick = 0; fLastOnTime = 0;
     }
 
     // ---- MIDI ----
@@ -47,11 +52,16 @@ public:
         const OpmVoice& v = fBank.voice[prog];
         if (!v.valid) return;
         fLastProg = prog;
+        catchUpTicks();                 // MXDRV runs this clock's LFO step before the note command
         int c = allocate(note);
         ChState& ch = fCh[c];
         write(0x08, c);                 // key off now, key on after one chip sample
         ch.note = note; ch.held = true; ch.age = ++fAge;
-        ch.portaRate = 0; ch.portaOff = 0; ch.lfoHold = 0; ch.onTime = fNow; fLastOn = c;
+        fLastOn = c; fLastOnTime = fNow;
+        fPorta = 0; fPortaAcc = 0;      // a portamento control note at the same time sets it again
+        lfoKeyOn();
+        anchorTicks();
+        ch.offKf = fDetuneKf + fPLfo.kf(); ch.amAtt = fALfo.att(); ch.volAtt = fVolAtt; ch.levelKey = -1;
         loadVoice(c, prog);
         setPitch(c);
         ch.pendingKeyOn = true;
@@ -62,12 +72,9 @@ public:
         if (note < kCtlKeys) return;
         for (int c = 0; c < 8; c++) {
             if (fCh[c].held && fCh[c].note == note) {
-                updatePorta(fCh[c], true);
-                fCh[c].lfoHold = lfoOffset(fCh[c]); // pitch stays where the LFO left it during the release
                 fCh[c].held = false;
                 if (fCh[c].pendingKeyOn) fCh[c].pendingKeyOn = false;
                 write(0x08, c);
-                setPitch(c);
             }
         }
     }
@@ -100,15 +107,7 @@ public:
         r = out.data[1] / 32768.0f;
         ++fNow;
         resolveControl();
-        // portamento: integrate while the key is held (MXDRV stops accumulating at key-off)
-        const bool tick = (fNow & 31) == 0;
-        const bool lfo = fLfoWave > 0 && fLfoWave <= 3;
-        for (int c = 0; c < 8; c++) {
-            ChState& ch = fCh[c];
-            if (!ch.held) continue;
-            if (ch.portaRate != 0) updatePorta(ch);
-            if (tick && (ch.portaRate != 0 || lfo)) setPitch(c);
-        }
+        while ((double)fNow >= fNextTick) { mdxTick(); fNextTick += clockSamples(); }
         for (int c = 0; c < 8; c++) {
             if (fCh[c].pendingKeyOn) {
                 fCh[c].pendingKeyOn = false;
@@ -120,79 +119,101 @@ public:
 
 private:
     struct ChState { int note = -1; bool held = false; bool pendingKeyOn = false; unsigned age = 0; int loaded = -2; int levelKey = -1;
-                     double portaRate = 0, portaOff = 0, lfoHold = 0; uint64_t onTime = 0; };
+                     int offKf = 0, amAtt = 0, volAtt = 0; };
 
-    // ---- pitch control notes ----
-    // DAWs (FL Studio) deliver pitch-bend automation only at block rate and scale it by their own
-    // pitch range, which distorts MXDRV's fast portamento and vibrato. The converter therefore sends
-    // portamento, detune and the MXDRV pitch LFO as short silent "control notes" on keys 0-13, placed
-    // at the same time as the MDX commands; notes reach the plugin sample-accurately.
-    // velocity-1 = 7-bit value; pairs (key, key+1) = MSB/LSB of a 14-bit value v (0..16128).
-    //   0,1  portamento rate (v-8064)/32 semitones/s for the note starting now (or the held note with 11)
-    //   2,3  detune (v-8064)/64 semitones                       (sticky)
-    //   4    pitch LFO: 0 off, 1 saw, 2 square, 3 triangle      (sticky)
-    //   5,6  LFO period [clocks];  7,8 LFO depth (v-8064)/256 semitones;  9,10 LFO delay [clocks] (sticky)
-    //   11   tie: restart portamento / LFO of the held note
-    //   12,13 MDX clock length v*4 us (sent on every tempo change; portamento and LFO step per clock like MXDRV)
-    static constexpr int kCtlKeys = 14;
+    // ---- MXDRV control notes ----
+    // DAWs (FL Studio) deliver pitch-bend automation only at block rate and scale it by their own pitch
+    // range, which distorts MXDRV's fast portamento and vibrato. In OPM68 mode the converter therefore
+    // sends MXDRV's per-channel driver state (portamento, detune, EC/EB software LFOs, E9 delay, volume,
+    // clock length) as short silent notes on keys 0-14 (below MDX's lowest note, MIDI 15), and this
+    // engine runs MXDRV's per-clock state machines itself (MxLfo.hpp). Notes arrive sample-accurately.
+    // Packet format: see packages/core/src/opm68ctl.ts (byte i on key i, value = velocity - 1).
+    static constexpr int kCtlKeys = 15;
     void controlNote(int key, int vel) { fCtl[key] = std::clamp(vel - 1, 0, 126); fCtlAt[key] = fNow; fCtlAny = true; }
-    int ctl14(int k) { if (fCtl[k] < 0 || fCtl[k + 1] < 0) return -1; int v = fCtl[k] * 127 + fCtl[k + 1]; fCtl[k] = fCtl[k + 1] = -1; return v; }
     void resolveControl()
     {
         if (!fCtlAny) return;
-        // half of a 14-bit pair: give the other half a moment, then drop it
-        for (int k : { 0, 2, 5, 7, 9, 12 })
-            if ((fCtl[k] < 0) != (fCtl[k + 1] < 0)) {
-                uint64_t at = fCtl[k] >= 0 ? fCtlAt[k] : fCtlAt[k + 1];
-                if (fNow - at <= 256) return;
-                fCtl[k] = fCtl[k + 1] = -1;
+        if (fCtl[0] < 0) { // header missing: drop stale bytes
+            for (int k = 1; k < kCtlKeys; k++) if (fCtl[k] >= 0 && fNow - fCtlAt[k] > 256) fCtl[k] = -1;
+            return;
+        }
+        const int n = (fCtl[0] & 15) + 1;
+        for (int k = 1; k < n; k++)
+            if (fCtl[k] < 0) { // wait briefly for the rest of the packet, then drop it
+                if (fNow - fCtlAt[0] > 256) { for (int& x : fCtl) x = -1; fCtlAny = false; }
+                return;
             }
+        uint8_t pk[kCtlKeys];
+        for (int k = 0; k < n; k++) pk[k] = (uint8_t)fCtl[k];
+        for (int& x : fCtl) x = -1;
         fCtlAny = false;
-        int v;
-        if ((v = ctl14(2)) >= 0) fDetune = (v - 8064) / 64.0;
-        if (fCtl[4] >= 0) { fLfoWave = fCtl[4]; fCtl[4] = -1; }
-        if ((v = ctl14(5)) >= 0) fLfoPeriod = v;
-        if ((v = ctl14(7)) >= 0) fLfoDepth = (v - 8064) / 256.0;
-        if ((v = ctl14(9)) >= 0) fLfoDelay = v;
-        if ((v = ctl14(12)) >= 0 && v > 0) fClockSec = v * 4e-6;
-        const bool retrig = fCtl[11] >= 0; fCtl[11] = -1;
-        double rate = 0; bool hasRate = false;
-        if ((v = ctl14(0)) >= 0) { rate = (v - 8064) / 32.0; hasRate = true; }
-        int c = -1;
-        if (fLastOn >= 0 && fCh[fLastOn].held && fNow - fCh[fLastOn].onTime <= 64) c = fLastOn;
-        else if (retrig || hasRate) { unsigned best = 0; for (int i = 0; i < 8; i++) if (fCh[i].held && fCh[i].age >= best) { best = fCh[i].age; c = i; } }
-        if (c >= 0 && (hasRate || retrig)) {
-            ChState& ch = fCh[c];
-            ch.portaRate = rate; ch.portaOff = 0;
-            if (retrig) ch.onTime = fNow; // portamento and LFO restart with the tie
-            updatePorta(ch);
-        }
-        for (int i = 0; i < 8; i++) if (fCh[i].note >= 0) setPitch(i);
+        catchUpTicks();
+        applyPacket(pk, n);
+        anchorTicks();
+        updateCurrent();
     }
-    // Same stepping as the converter's MXDRV model: the LFO counts clocks from the note command;
-    // after `delay` clocks the phase advances one step per clock.
-    // MXDRV adds the portamento step once per clock while the key is on, starting in the note's first clock.
-    void updatePorta(ChState& ch, bool keyOff = false)
+    void applyPacket(const uint8_t* b, int n)
     {
-        if (ch.portaRate == 0) return;
-        double clocks = (double)(fNow - ch.onTime) / chipRate() / fClockSec;
-        double n = keyOff ? std::floor(clocks - 1e-6) + 1 : std::floor(clocks + 1e-9) + 1;
-        ch.portaOff = ch.portaRate * fClockSec * std::max(0.0, n);
-    }
-    double lfoOffset(const ChState& ch) const
-    {
-        if (!ch.held) return ch.lfoHold;
-        if (fLfoWave <= 0 || fLfoWave > 3 || fLfoPeriod <= 0) return 0;
-        long long k = (long long)std::floor((double)(fNow - ch.onTime) / chipRate() / fClockSec);
-        long long ph = k - (long long)fLfoDelay + 1;
-        if (ph < 0) return 0;
-        const long long per = (long long)fLfoPeriod;
-        const double a = fLfoDepth * 2.0 / per;
-        switch (fLfoWave) {
-        case 1: return a * ((ph % per) - per / 2.0);                       // sawtooth
-        case 2: return ((ph / per) & 1) ? -fLfoDepth : fLfoDepth;           // square
-        default: { long long x = ph % (per * 2); return a * (x < per ? x : 2 * per - x) - fLfoDepth; } // triangle
+        int p = 1;
+        auto rd = [&]() -> int { int v = 0, mul = 1, x, i = 0; do { if (p >= n) return v; x = b[p++]; v += (x & 63) * mul; mul *= 63; } while ((x & 64) && ++i < 5); return v; };
+        auto sg = [](int u) { return (u & 1) ? -((u + 1) >> 1) : (u >> 1); };
+        bool lfoSet = false;
+        while (p < n) {
+            int tag = b[p++], type = tag >> 4, param = tag & 15;
+            switch (type) {
+            case 0: { int v = sg(rd()); if (param & 1) fPorta = 0; else { fPorta = v; fPortaAcc = 0; } break; }
+            case 1: fDetuneKf = sg(rd()); break;
+            case 2: case 3: {
+                int per = 0, amp = 0;
+                if (param >= 2) { per = rd(); amp = sg(rd()); }
+                int m = param == 0 ? 0x80 : param == 1 ? 0x81 : ((param - 2) & 3) + (param >= 10 ? 4 : 0);
+                if (type == 2) fPLfo.set(m, per, amp); else fALfo.set(m, per, amp);
+                lfoSet = true;
+                break;
+            }
+            case 4: fDelay = rd() & 0xff; break;
+            case 5: { int v = rd(); if (v > 0) fClockSec = v * 256e-6; break; }
+            case 6: fVolAtt = std::min(127, rd()); if (fLastOn >= 0) fCh[fLastOn].levelKey = -1; break;
+            default: p = n; break;
+            }
         }
+        // an LFO command in the same clock as a key-on comes first in MXDRV: redo the key-on delay
+        if (lfoSet && fLastOn >= 0 && fNow - fLastOnTime <= 64) lfoKeyOn();
+    }
+    /** Key-on (not a tie): with an LFO delay, MXDRV zeroes both LFOs and restarts them after the delay. */
+    void lfoKeyOn()
+    {
+        fDelayCnt = fDelay;
+        if (fDelay == 0) return;
+        fPLfo.val = 0; fALfo.val = 0;
+        delayTick();
+    }
+    void delayTick()
+    {
+        fDelayCnt = (fDelayCnt - 1) & 0xff;
+        if (fDelayCnt == 0) { if (fPLfo.on) fPLfo.reset(); if (fALfo.on) fALfo.reset(); }
+    }
+    /** One MDX clock of modulation (MXDRV L001050). */
+    void mdxTick()
+    {
+        if (fPorta) fPortaAcc = (int32_t)((uint32_t)fPortaAcc + (uint32_t)(fPorta * 256));
+        if (fDelay != 0 && fDelayCnt != 0) delayTick();
+        else { if (fPLfo.on) fPLfo.step(fRnd); if (fALfo.on) fALfo.step(fRnd); }
+        updateCurrent();
+    }
+    double clockSamples() const { return std::max(1.0, fClockSec * chipRate()); }
+    /** Run the clock that falls on this moment before applying events of the same clock. */
+    void catchUpTicks() { while ((double)fNow + clockSamples() * 0.5 >= fNextTick) { mdxTick(); fNextTick += clockSamples(); } }
+    void anchorTicks() { fNextTick = (double)fNow + clockSamples(); }
+    /** The current note follows the channel's modulation; older (released) voices keep their last state. */
+    void updateCurrent()
+    {
+        if (fLastOn < 0) return;
+        ChState& ch = fCh[fLastOn];
+        int off = fDetuneKf + (fPortaAcc >> 16) + fPLfo.kf();
+        int am = fALfo.att();
+        if (off != ch.offKf) { ch.offKf = off; setPitch(fLastOn); }
+        if (am != ch.amAtt || fVolAtt != ch.volAtt) { ch.amAtt = am; ch.volAtt = fVolAtt; applyLevel(fLastOn); }
     }
 
     void write(int reg, int data) { fChip.write_address(reg); fChip.write_data(data & 0xff); }
@@ -245,15 +266,21 @@ private:
         ChState& ch = fCh[c];
         if (ch.loaded < 0) return;
         const OpmVoice& v = fBank.voice[ch.loaded];
-        int att = std::min(127, attFromCC(fVol) + attFromCC(fExpr));
+        // amplitude LFO: MXDRV adds the high byte to the volume; an overflow (>= 0x80) mutes
+        // MXDRV: volume + amplitude-LFO high byte, any overflow (>= 0x80) becomes 0x7f
+        int mxAtt = ch.volAtt + ch.amAtt; if (mxAtt >= 0x80) mxAtt = 0x7f;
+        int att = std::min(127, attFromCC(fVol) + attFromCC(fExpr) + mxAtt);
         int key = att * 8 + panBits();
+        (void)0;
         if (key == ch.levelKey) return;
         ch.levelKey = key;
+        if (traceFile() && c == fLastOn) std::fprintf(traceFile(), "%.6f a %d\n", fNow / chipRate(), att);
         static const int carriers[8] = { 8, 8, 8, 8, 10, 14, 14, 15 }; // bits over register slots M1,M2,C1,C2
         static const int fileToReg[4] = { 0, 2, 1, 3 };
         for (int k = 0; k < 4; k++) {
             int rs = fileToReg[k];
             int tl = v.op[k].tl + (((carriers[v.con & 7] >> rs) & 1) ? att : 0);
+            if (traceFile() && c == fLastOn && rs == 3) std::fprintf(traceFile(), "%.6f t %d\n", fNow / chipRate(), std::min(127, tl));
             write(0x60 + rs * 8 + c, std::min(127, tl));
         }
         int rl = (att >= 127) ? 0 : panBits();
@@ -266,10 +293,11 @@ private:
     {
         static const int code[12] = { 0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14 };
         // MXDRV note n = MIDI - 15 at 4 MHz (KF +5 like MXDRV); at 3.58 MHz the OPM is ~2 semitones lower.
-        double semis = (fCh[c].note - (f4MHz ? 15 : 13)) + (fBend / 8192.0) * fBendRange + fCh[c].portaOff + fDetune + lfoOffset(fCh[c]);
-        int p = (int)std::lround(semis * 64.0) + (f4MHz ? 5 : 0);
+        double semis = (fCh[c].note - (f4MHz ? 15 : 13)) + (fBend / 8192.0) * fBendRange;
+        int p = (int)std::lround(semis * 64.0) + fCh[c].offKf + (f4MHz ? 5 : 0);
         p = std::clamp(p, 0, 8 * 12 * 64 - 1);
         int n = p >> 6, kf = p & 63;
+        if (traceFile() && c == fLastOn) std::fprintf(traceFile(), "%.6f p %d\n", fNow / chipRate(), p);
         write(0x28 + c, ((n / 12) << 4) | code[n % 12]);
         write(0x30 + c, kf << 2);
     }
@@ -284,9 +312,16 @@ private:
     int fRpnMsb = 127, fRpnLsb = 127, fLfoVoice = -1;
     unsigned fAge = 0;
     uint64_t fNow = 0;
-    int fCtl[kCtlKeys] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+    int fCtl[kCtlKeys] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
     uint64_t fCtlAt[kCtlKeys] = {};
     bool fCtlAny = false;
-    int fLastOn = -1, fLfoWave = 0;
-    double fDetune = 0, fLfoPeriod = 0, fLfoDepth = 0, fLfoDelay = 0, fClockSec = 12288.0 * 56 / 48 / 1e6;
+    int fLastOn = -1;
+    uint64_t fLastOnTime = 0;
+    // MDX channel state (one MDX channel per plugin instance)
+    int fPorta = 0, fDetuneKf = 0, fDelay = 0, fDelayCnt = 0, fVolAtt = 0;
+    int32_t fPortaAcc = 0;
+    mx::PitchLfo fPLfo;
+    mx::AmpLfo fALfo;
+    mx::Random fRnd;
+    double fNextTick = 0, fClockSec = 12288.0 * 56 / 48 / 1e6;
 };

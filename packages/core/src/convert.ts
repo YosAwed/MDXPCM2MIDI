@@ -4,6 +4,7 @@ import { parseMdx, CHANNEL_NAMES, type MdxFile, type OpmVoice } from './mdx.js';
 import { sequence, type SeqResult, type PcmKey } from './sequencer.js';
 import { Track, writeSmf } from './smf.js';
 import { defaultProgramFor, defaultDrumFor } from './gm.js';
+import { packControl, lfoMode, type CtlItem } from './opm68ctl.js';
 import { assignOpmSlots, writeOpmBank, writeOpmEntries, applyVolume, type OpmEntry } from './opm.js';
 
 export type PcmMode = 'sf2' | 'gm';
@@ -134,7 +135,9 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   const VOLTAB = [0x2a, 0x28, 0x25, 0x22, 0x20, 0x1d, 0x1a, 0x18, 0x15, 0x12, 0x10, 0x0d, 0x0a, 0x08, 0x05, 0x02];
   const comboSlot: Map<string, number>[] = Array.from({ length: 8 }, () => new Map());
   const quant = new Array(8).fill(1);
-  const qAtt = (ch: number, att: number) => Math.min(127, Math.round(att / quant[ch]) * quant[ch]);
+  // OPM68 with control notes: the volume goes to the plugin directly, so voices are not multiplied by volume
+  const nativeCtl = fmMode === 'opm68' && options.opm68PortaNotes !== false;
+  const qAtt = (ch: number, att: number) => (nativeCtl ? 0 : Math.min(127, Math.round(att / quant[ch]) * quant[ch]));
   if (bake) {
     const perCh: Set<string>[] = Array.from({ length: 8 }, () => new Set());
     const cur = Array.from({ length: 8 }, () => ({ voice: -1, att: VOLTAB[8] }));
@@ -222,7 +225,8 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
       tr.text(0, 0x03, `${ch < 8 ? 'FM' : 'ADPCM'} ${CHANNEL_NAMES[ch]}`);
       // RPN pitch bend range
       if (ch < 8) tr.add(0, [0xb0 | mc, 101, 0, 0xb0 | mc, 100, 0, 0xb0 | mc, 6, bendRange, 0xb0 | mc, 38, 0], 1);
-      if (bake && ch < 8) tr.add(0, [0xb0 | mc, 7, 127], 1); // volume lives in the voices
+      if (bake && ch < 8) tr.add(0, [0xb0 | mc, 7, 127], 1); // volume lives in the voices (or in OPM68 control notes)
+      if (nativeCtl && ch < 8) ctl(ch, 0, { k: 'vol', v: VOLTAB[8] }); // MXDRV's initial volume (v8)
       if (fmMode === 'vopm' && ch < 8) {
         // VOPM NRPN #0 = OPM clock (112+ -> 4 MHz), #2 = lowpass filter (0-63 off). Sent before the RPN.
         const clk = options.vopmClock4MHz === false ? 0 : 127;
@@ -245,7 +249,19 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   const ccFromAtt = (att: number) => Math.max(0, Math.min(127, Math.round(127 * Math.pow(10, (-0.75 * att) / 40))));
 
   let fadeStart: number | null = null;
-  const nativePitch = fmMode === 'opm68' && options.opm68PortaNotes !== false;
+  const nativePitch = nativeCtl;
+  /** OPM68 control items per FM channel and MDX clock (packed into control notes after the event loop). */
+  const ctlItems: Map<number, CtlItem[]>[] = Array.from({ length: 8 }, () => new Map());
+  function ctl(ch: number, tick: number, it: CtlItem) {
+    const m = ctlItems[ch];
+    const list = m.get(tick) ?? [];
+    const i = list.findIndex((x) => x.k === it.k); // one item of a kind per clock: the last one wins
+    if (i >= 0) list.splice(i, 1);
+    list.push(it);
+    m.set(tick, list);
+  }
+  const amAtt = new Map<number, number>(), panOff = new Map<number, boolean>();
+  const expr = (ch: number) => (panOff.get(ch) ? 0 : ccFromAtt(amAtt.get(ch) ?? 0));
   const chVel = new Map<number, number>();
   for (const e of seq.events) {
     const T = e.t * S;
@@ -257,10 +273,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
         // OPM68 steps portamento and the pitch LFO per MDX clock: tell it the new clock length
         if (nativePitch) for (let ch = 0; ch < 8; ch++) {
           if (!seq.usedChannels[ch]) continue;
-          const v = Math.max(0, Math.min(16128, Math.round(us / 48 / 4)));
-          const tr = trackFor(ch), mc = midiChOf(ch);
-          tr.add(T, [0x90 | mc, 12, Math.floor(v / 127) + 1], 5); tr.add(T + Math.max(1, S >> 1), [0x80 | mc, 12, 0], 2);
-          tr.add(T, [0x90 | mc, 13, (v % 127) + 1], 5); tr.add(T + Math.max(1, S >> 1), [0x80 | mc, 13, 0], 2);
+          trackFor(ch); ctl(ch, e.t, { k: 'clock', v: 256 - e.timerB });
         }
         conductor.meta(T, 0x51, [(us >> 16) & 255, (us >> 8) & 255, us & 255], 1);
       } else if (e.type === 'loopPoint') {
@@ -353,6 +366,7 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
         break;
       }
       case 'volume':
+        if (nativeCtl && e.ch < 8) ctl(e.ch, e.t, { k: 'vol', v: e.att });
         if (bake && e.ch < 8) { bakeState[e.ch].att = e.att; break; }
         if (volumeMode === 'velocity') chVel.set(e.ch, ccFromAtt(e.att));
         else cc(tr, e.ch, T, mc, 7, ccFromAtt(e.att));
@@ -360,32 +374,21 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
       case 'pan': {
         const v = [64, 0, 127, 64][e.pan];
         cc(tr, e.ch, T, mc, 10, v);
-        cc(tr, e.ch, T, mc, 11, e.pan === 0 ? 0 : 127);
+        panOff.set(e.ch, e.pan === 0);
+        cc(tr, e.ch, T, mc, 11, expr(e.ch));
         break;
       }
-      case 'porta': case 'retrig': case 'detune': case 'lfo': {
-        // OPM68 control notes (keys 0-13, see plugin/opm68/OpmEngine.hpp)
-        const us = tempos.length ? tempos[tempos.length - 1].us : 12288 * (256 - 200);
-        const tickSec = us / 48 / 1e6;
-        const ctl = (key: number, v7: number) => {
-          tr.add(T, [0x90 | mc, key, Math.max(0, Math.min(126, v7)) + 1], 5);
-          tr.add(T + Math.max(1, S >> 1), [0x80 | mc, key, 0], 2);
-        };
-        const ctl14 = (key: number, v: number) => { const x = Math.max(0, Math.min(16128, Math.round(v))); ctl(key, Math.floor(x / 127)); ctl(key + 1, x % 127); };
-        if (e.type === 'porta' || e.type === 'retrig') {
-          if (e.type === 'retrig') ctl(11, 0);
-          if (e.perTick !== 0 || e.type === 'retrig') ctl14(0, 8064 + (e.perTick / 16384 / tickSec) * 32);
-        } else if (e.type === 'detune') {
-          ctl14(2, 8064 + e.value);
-        } else {
-          const wave = !e.on ? 0 : e.wave <= 2 ? e.wave + 1 : 4;
-          ctl(4, wave);
-          if (e.on) {
-            ctl14(5, e.period);
-            ctl14(7, 8064 + (e.amp / 16384) * (e.period / 2) * 256);
-            ctl14(9, e.delay);
-          }
-        }
+      case 'porta': case 'detune': case 'plfo': case 'alfo': case 'lfodelay': {
+        // OPM68 control items (see opm68ctl.ts)
+        if (e.type === 'porta') ctl(e.ch, e.t, e.keep ? { k: 'porta', v: 0, keep: true } : { k: 'porta', v: e.raw });
+        else if (e.type === 'detune') ctl(e.ch, e.t, { k: 'detune', v: e.value });
+        else if (e.type === 'lfodelay') ctl(e.ch, e.t, { k: 'delay', v: e.delay });
+        else ctl(e.ch, e.t, { k: e.type, mode: lfoMode(e.mode), per: e.per, amp: e.amp });
+        break;
+      }
+      case 'amlfo': {
+        amAtt.set(e.ch, e.att);
+        cc(tr, e.ch, T, mc, 11, expr(e.ch));
         break;
       }
       case 'pitch': {
@@ -394,6 +397,19 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
         tr.add(T, [0xe0 | mc, v & 127, v >> 7], 4);
         break;
       }
+    }
+  }
+
+  // OPM68 control notes
+  if (nativeCtl) for (let ch = 0; ch < 8; ch++) {
+    if (!seq.usedChannels[ch]) continue;
+    const tr = trackFor(ch), mc = midiChOf(ch);
+    for (const [tick, bytes] of packControl(ctlItems[ch])) {
+      const T = tick * S;
+      bytes.forEach((b, key) => {
+        tr.add(T, [0x90 | mc, key, b + 1], 5);
+        tr.add(T + Math.max(1, S >> 1), [0x80 | mc, key, 0], 2);
+      });
     }
   }
 
