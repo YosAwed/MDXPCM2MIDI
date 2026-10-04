@@ -9,9 +9,9 @@
 //    FL's own Sampler, one channel and one playlist track per sample. A note lasts until the next note of
 //    the same ADPCM channel (MXDRV plays one sample per channel) or the end of the sample.
 //
-// The template is the same as for flp.ts (8 OPM68 channels "FM A".."FM H" + one "ADPCM" channel). If it
-// also holds a channel of FL's Sampler, that channel is used as the model for the sample channels;
-// otherwise one is derived from the "ADPCM" channel (plugin removed, channel type 0, sample path added).
+// The template is the same as for flp.ts (8 OPM68 channels "FM A".."FM H" + one "ADPCM" channel). The
+// sample channels copy a Sampler channel of the template if it has one, else a built-in Sampler channel
+// saved by FL Studio; the first one takes the place of the sforzando "ADPCM" channel (same mixer insert).
 
 import { parsePdx, decodePdxSample } from './pdx.js';
 import {
@@ -101,7 +101,6 @@ export function buildFlpArrange(input: ArrangeInput): ArrangeResult {
     // the event just before the arrangement (99) after the last channel is still channel/global data; stop at 143 (FX?)
   }
   const fmChan = [...FM_LETTERS].map((L, i) => chans.find((c) => c.name.trim().toUpperCase() === `FM ${L}`) ?? chans.filter((c) => c.opm68)[i]);
-  const pcmModel = chans.find((c) => c.type === 0) ?? chans.find((c) => /ADPCM|PCM/i.test(c.name));
 
   // ---- tempo (same policy as flp.ts)
   const tempos: { tick: number; us: number }[] = [];
@@ -242,53 +241,44 @@ export function buildFlpArrange(input: ArrangeInput): ArrangeResult {
   const samplerIndex = new Map<number, number>(); // sample -> FL channel index
   const newChannelBlocks: FlpEvent[][] = [];
   if (usedSamples.length) {
-    if (!pcmModel) warnings.push('テンプレートに ADPCM / Sampler チャンネルがないため ADPCM を省略しました');
-    else {
-      const model = ev.slice(pcmModel.at, pcmModel.end);
-      const isSampler = pcmModel.type === 0;
-      let nextIndex = Math.max(...chans.map((c) => c.index)) + 1;
-      usedSamples.forEach((si, i) => {
-        const s = samples[si];
-        const file = `${stem}_${s.bank ? `b${s.bank}_` : ''}${String(s.sample).padStart(2, '0')}_f${s.freq}.wav`;
-        wavs.push({ file, data: writeWav(s.pcm!, s.rate) });
-        const index = i === 0 && !isSampler ? pcmModel.index : nextIndex++;
-        samplerIndex.set(si, index);
-        const blk: FlpEvent[] = [];
-        let named = false;
-        for (const e of model) {
-          if (e.id === FLP.NewChannel) { blk.push({ id: e.id, data: Uint8Array.of(index & 255, index >> 8) }); continue; }
-          if (!isSampler && (e.id === FLP.PluginName || e.id === FLP.PluginData)) continue;
-          if (e.id === 21) { blk.push({ id: 21, data: Uint8Array.of(0) }); continue; }
-          // 132 (cut, cut by): the template gives every channel its own group; keep that for each sample
-          // (the note lengths already end a sample where MXDRV's next key-on on that ADPCM channel would)
-          if (e.id === 132) { const g = 32 + i; blk.push({ id: 132, data: Uint8Array.of(g & 255, g >> 8, g & 255, g >> 8) }); continue; }
-          if (e.id === 196) continue; // sample path: written after the name
-          if (e.id === 203 || (isSampler && e.id === 192)) {
-            if (named) continue;
-            named = true;
-            blk.push(evText(203, trackNames[pcmTrackOf.get(si)!]));
-            blk.push(evText(196, input.samplePath ? input.samplePath(file) : file));
-            continue;
-          }
-          blk.push({ id: e.id, data: e.data.slice() });
-        }
-        if (!named) { blk.splice(2, 0, evText(203, trackNames[pcmTrackOf.get(si)!]), evText(196, input.samplePath ? input.samplePath(file) : file)); }
-        newChannelBlocks.push(blk);
-      });
-      // replace the model (sforzando "ADPCM") channel by the first sampler; the others go after the last channel
-      if (!isSampler) {
-        ev.splice(pcmModel.at, pcmModel.end - pcmModel.at, ...newChannelBlocks[0]);
-        const shift = newChannelBlocks[0].length - (pcmModel.end - pcmModel.at);
-        for (const c of chans) { if (c.at > pcmModel.at) { c.at += shift; c.end += shift; } }
-        pcmModel.end = pcmModel.at + newChannelBlocks[0].length;
-        newChannelBlocks.shift();
+    // model: a Sampler channel of the template, else the built-in one (saved by FL Studio 26.1.6)
+    const tplSampler = chans.find((c) => c.type === 0);
+    const model = tplSampler ? ev.slice(tplSampler.at, tplSampler.end) : builtinSampler();
+    const sforzando = chans.find((c) => c.type !== 0 && !c.opm68 && /ADPCM|PCM/i.test(c.name));
+    // mixer insert (104) of the template's ADPCM channel, so the samples go where ADPCM went
+    const insert = sforzando ? ev.slice(sforzando.at, sforzando.end).find((e) => e.id === 104)?.data : undefined;
+    let nextIndex = Math.max(...chans.map((c) => c.index)) + 1;
+    usedSamples.forEach((si, i) => {
+      const s = samples[si];
+      const file = `${stem}_${s.bank ? `b${s.bank}_` : ''}${String(s.sample).padStart(2, '0')}_f${s.freq}.wav`;
+      wavs.push({ file, data: writeWav(s.pcm!, s.rate) });
+      const index = i === 0 && sforzando ? sforzando.index : nextIndex++;
+      samplerIndex.set(si, index);
+      const path = input.samplePath ? input.samplePath(file) : file;
+      const blk: FlpEvent[] = [];
+      let hasPath = false;
+      for (const e of model) {
+        if (e.id === FLP.NewChannel) blk.push({ id: e.id, data: Uint8Array.of(index & 255, index >> 8) });
+        else if (e.id === 203 || e.id === 192) blk.push(evText(e.id, trackNames[pcmTrackOf.get(si)!]));
+        else if (e.id === 196) { blk.push(evText(196, path)); hasPath = true; }
+        else if (e.id === 104 && insert) blk.push({ id: 104, data: insert.slice() });
+        else blk.push({ id: e.id, data: e.data.slice() });
       }
-      const lastCh = chans.reduce((a, c) => (c.at > a.at ? c : a));
-      ev.splice(lastCh.end, 0, ...newChannelBlocks.flat());
-      flp.channels = chans.length + newChannelBlocks.length;
+      if (!hasPath) blk.push(evText(196, path));
+      newChannelBlocks.push(blk);
+    });
+    // the first sampler takes the place of the template's sforzando "ADPCM" channel; the others go after the last channel
+    if (sforzando) {
+      const old = sforzando.end - sforzando.at;
+      ev.splice(sforzando.at, old, ...newChannelBlocks[0]);
+      const shift = newChannelBlocks[0].length - old;
+      for (const c of chans) if (c.at > sforzando.at) { c.at += shift; c.end += shift; }
+      sforzando.end = sforzando.at + newChannelBlocks[0].length;
+      newChannelBlocks.shift();
     }
-  } else if (pcmModel && pcmModel.type !== 0 && !chans.some((c) => c.type === 0)) {
-    // no ADPCM in this song: drop nothing, the template channel just stays empty
+    const lastCh = chans.reduce((a, c) => (c.at > a.at ? c : a));
+    ev.splice(lastCh.end, 0, ...newChannelBlocks.flat());
+    flp.channels = chans.length + newChannelBlocks.length;
   }
 
   // ---- patterns (identical clips share one pattern)
@@ -425,4 +415,17 @@ export function arrangeSamplesFromPdx(keys: { midiKey: number; bank: number; sam
     const { pcm, rate } = decodePdxSample(raw, k.freq);
     return { ...k, pcm, rate };
   });
+}
+
+/** A channel of FL's Sampler as FL Studio 26.1.6 saves it (events 64 .. 51; 203 name and 196 path are replaced).
+ *  A channel derived from a plugin channel (type changed to 0) is not enough: FL keeps the wrapper (212 header)
+ *  and reports the sample as invalid. */
+const SAMPLER_BLOCK = 'QA8AFQDJAgAA1DQAAAAAAAAAAP////8AAAAAUQAAAAMAAAAAAAAAAAAAAAAAAABzAAAARAIAAAAAAAAAAAAAyxpYAGEAawBNADMAOQBfADAAMgBfAGYANAAAAJsAAAAAgEFFRwApAAAB0RQAAAAAABkAAAAAAAAEAAAAkAAAAIqAAIAAiwAAAQBZAABhgAAwAEWAAFYAAUcABFMAAEoAAEsAAEwAAFUACIMAAIAARgAAaAAAMgHbGAAZAAAQJwAAAAAAAAABAAAAAAAAAAAAAOUUAAAAAAAyAAAAAAAAAAAAAAAAAADdCQAAAAD0AQAAANeoAf////8AAAAAAQAAAf////88AAAAAACAPwAAgD8AAIA/AACAPwAAgD8AAAAAAQAAAP////8ABAAAMAAAAAAAAQCnBQAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAACAAAA/v////////8AAAAAAAAAAAAAAAAAAAAAAADwPwAAAAAAAAAA/////wEBAAAAAAAAAADgP4QAAAAAkAAAAACRAAAAACAA5BBkAAAAAAAAAAAAAAAAAAAA5BA8AAAAAAAAAAAAAAAAAAAA2kQAAAAAAAAAAGQAAAAgTgAAIE4AADB1AAAyAAAAIE4AAAAAAABkAAAAIE4AAAAAAAC2gAAAAAAAAAAAAAAAAAAAAAAAANpEBAAAAAAAAABkAAAAIE4AACBOAAAwdQAAMgAAACBOAAAAAAAAZAAAACBOAAAAAAAAtoAAAAAAAAAAAAAAAAAAAJv////aRAAAAAAAAAAAZAAAACBOAAAgTgAAMHUAADIAAAAgTgAAAAAAAGQAAAAgTgAAAAAAALaAAAAAAAAAAAAAAAAAAAAAAAAA2kQAAAAAAAAAAGQAAAAgTgAAIE4AADB1AAAyAAAAIE4AAAAAAABkAAAAIE4AAAAAAAC2gAAAAAAAAAAAAAAAAAAAAAAAANpEAAAAAAAAAABkAAAAIE4AACBOAAAwdQAAMgAAACBOAAAAAAAAZAAAACBOAAAAAAAAtoAAAAAAAAAAAAAAAAAAAAAAAACPAgAAABQAxMQBRAA6AFwAWAA2ADgAMAAwADAAXABNAEQAWABcAF8AbQBkAHgAcABjAG0AMgBtAGkAZABpAF8AdABlAHMAdABcAGYAbABwAF8AdABlAHMAdABzAF8AYQByAHIAYQBuAGcAZQBcADAANABfAGgAdwBsAGYAbwBfAHkAXwBzAGwAdQByAFwAWABhAGsATQAzADkAXwBzAGEAbQBwAGwAZQBzAFwAWABhAGsATQAzADkAXwAwADIAXwBmADQALgB3AGEAdgAAAKr/////MwA=';
+function builtinSampler(): FlpEvent[] {
+  const blk = Uint8Array.from(atob(SAMPLER_BLOCK), (c) => c.charCodeAt(0));
+  const f = new Uint8Array(22 + blk.length);
+  f.set([0x46, 0x4c, 0x68, 0x64, 6, 0, 0, 0, 0, 0, 1, 0, 96, 0, 0x46, 0x4c, 0x64, 0x74]);
+  new DataView(f.buffer).setUint32(18, blk.length, true);
+  f.set(blk, 22);
+  return parseFlp(f).events;
 }
