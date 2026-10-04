@@ -5,7 +5,8 @@
 // note is MIDI 15 (o0 d+), so these keys never collide with music. All control data for one channel
 // at one MDX clock forms a packet: byte i is carried by key i (value = velocity - 1, 7 bits).
 //
-//   byte 0      header: bits 0-3 = packet length - 1 (1..15 bytes)
+//   byte 0      header: bits 0-3 = packet length - 1 (1..15 bytes),
+//               bits 4-6 = late: the items belong to that many clocks earlier (they did not fit then; 0..6)
 //   byte 1..    items: tag byte (bits 4-6 type, bits 0-3 param) + varints
 //
 //   type 0 PORTA   param bit0: stop without resetting the offset; varint s = F2 value (1/256 KF per clock)
@@ -13,7 +14,11 @@
 //   type 2 PLFO    param = mode (0 off, 1 on/restart, 2-5 set wave 0-3, +8 amplitude x256);
 //                  set modes are followed by varint u period and varint s amplitude
 //   type 3 ALFO    same as PLFO, for the amplitude LFO (EB)
-//   type 4 DELAY   varint u = E9 LFO delay
+//   type 4 DELAY   param 0: varint u = E9 LFO delay
+//                  param 1: LEGATO (no data) - the next note in this clock is a tie into another pitch (&):
+//                  change the pitch of the sounding note without a key-on; LFOs keep running
+//                  param 2: VOICE varint u = bank slot to load into the sounding note now (@ during a note)
+//                  param 3: REG varint u register, varint u data = y command (direct OPM register write)
 //   type 5 CLOCK   varint u = 256 - TimerB (the MDX clock is that many 256 us units)
 //   type 6 VOLUME  varint u = MXDRV attenuation (voices are not volume-baked in this mode)
 //   type 7 FADE    varint u = extra attenuation for the fade-out (0 = none, 127 = silent), added to VOLUME
@@ -29,10 +34,13 @@ export type CtlItem =
   | { k: 'delay'; v: number }
   | { k: 'clock'; v: number }
   | { k: 'vol'; v: number }
-  | { k: 'fade'; v: number };
+  | { k: 'fade'; v: number }
+  | { k: 'legato' }
+  | { k: 'voice'; v: number }
+  | { k: 'reg'; r: number; v: number };
 
 export const CTL_KEYS = 15;
-const PRIORITY: Record<CtlItem['k'], number> = { porta: 0, detune: 1, vol: 2, fade: 3, clock: 4, plfo: 5, alfo: 6, delay: 7 };
+const PRIORITY: Record<CtlItem['k'], number> = { legato: -1, voice: -1, reg: 0.5, porta: 0, detune: 1, vol: 2, fade: 3, clock: 4, plfo: 5, alfo: 6, delay: 7 };
 
 const varint = (u: number): number[] => {
   const out: number[] = [];
@@ -54,6 +62,9 @@ export function encodeItem(it: CtlItem): number[] {
       return it.mode >= 2 ? [tag, ...varint(it.per & 0xffff), ...varint(zigzag(it.amp))] : [tag];
     }
     case 'delay': return [0x40, ...varint(it.v)];
+    case 'legato': return [0x41];
+    case 'voice': return [0x42, ...varint(it.v)];
+    case 'reg': return [0x43, ...varint(it.r), ...varint(it.v)];
     case 'clock': return [0x50, ...varint(it.v)];
     case 'vol': return [0x60, ...varint(it.v)];
     case 'fade': return [0x70, ...varint(it.v)];
@@ -64,21 +75,30 @@ export function encodeItem(it: CtlItem): number[] {
 export function packControl(items: Map<number, CtlItem[]>): Map<number, number[]> {
   const out = new Map<number, number[]>();
   const ticks = [...items.keys()].sort((a, b) => a - b);
-  let carry: CtlItem[] = [];
+  let carry: { it: CtlItem; t0: number }[] = [];
   let i = 0;
   let t = ticks.length ? ticks[0] : 0;
   while (i < ticks.length || carry.length) {
     if (!carry.length) t = ticks[i];
-    const own = ticks[i] === t ? items.get(ticks[i++])! : [];
-    const queue = [...carry, ...[...own].sort((a, b) => PRIORITY[a.k] - PRIORITY[b.k])];
+    const own = ticks[i] === t ? items.get(ticks[i++])!.map((it) => ({ it, t0: t })) : [];
+    const sorted = [...own].sort((a, b) => PRIORITY[a.it.k] - PRIORITY[b.it.k]);
+    // LEGATO must arrive with its note: it goes first, ahead of older carried items
+    const queue = sorted[0]?.it.k === 'legato' ? [sorted[0], ...carry, ...sorted.slice(1)] : [...carry, ...sorted];
     const bytes: number[] = [];
     carry = [];
-    for (const it of queue) {
-      const b = encodeItem(it);
-      if (!carry.length && bytes.length + b.length <= CTL_KEYS - 1) bytes.push(...b);
-      else carry.push(it);
+    let late = 0;
+    for (const q of queue) {
+      const b = encodeItem(q.it);
+      // a packet is either all late items or all current ones (a late packet must not take current items)
+      const age = Math.min(6, t - q.t0);
+      const sameAge = !bytes.length || age === late;
+      // keep the order within one age: once an item of this age is carried, the rest of that age follow it
+      if (sameAge && !carry.some((x) => Math.min(6, t - x.t0) === age) && bytes.length + b.length <= CTL_KEYS - 1) {
+        if (!bytes.length) late = Math.min(6, t - q.t0);
+        bytes.push(...b);
+      } else carry.push(q);
     }
-    if (bytes.length) out.set(t, [bytes.length, ...bytes]); // header: length - 1 (= payload length)
+    if (bytes.length) out.set(t, [bytes.length | (late << 4), ...bytes]); // header: length - 1 (= payload length), late
     t++;
   }
   return out;
@@ -86,7 +106,7 @@ export function packControl(items: Map<number, CtlItem[]>): Map<number, number[]
 
 /** Decoder (used by tests; the plugin has its own C++ version). */
 export function decodePacket(bytes: number[]): CtlItem[] {
-  const n = (bytes[0] & 15) + 1;
+  const n = (bytes[0] & 15) + 1; // bits 4-6: late (see packControl)
   let p = 1;
   const rd = () => { let v = 0, mul = 1, b: number; do { b = bytes[p++]; v += (b & 63) * mul; mul *= 63; } while (b & 64); return v; };
   const s = (u: number) => (u & 1 ? -(u + 1) / 2 : u / 2);
@@ -99,7 +119,7 @@ export function decodePacket(bytes: number[]): CtlItem[] {
       const k = type === 2 ? 'plfo' : 'alfo';
       if (param >= 2) { const per = rd(), amp = s(rd()); items.push({ k, mode: param, per, amp }); }
       else items.push({ k, mode: param, per: 0, amp: 0 });
-    } else if (type === 4) items.push({ k: 'delay', v: rd() });
+    } else if (type === 4) items.push(param === 1 ? { k: 'legato' } : param === 2 ? { k: 'voice', v: rd() } : param === 3 ? { k: 'reg', r: rd(), v: rd() } : { k: 'delay', v: rd() });
     else if (type === 5) items.push({ k: 'clock', v: rd() });
     else if (type === 6) items.push({ k: 'vol', v: rd() });
     else if (type === 7) items.push({ k: 'fade', v: rd() });

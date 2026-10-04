@@ -34,7 +34,7 @@ public:
         for (int c = 0; c < 8; c++) { fCh[c] = ChState(); write(0x08, c); }
         fProgram = 0; fVol = 127; fExpr = 127; fPan = 64; fBend = 0; fBendRange = fDefaultBend;
         fRpnMsb = fRpnLsb = 127; fAge = 0;
-        fLfoVoice = -1; fLastOn = -1; fCtlAny = false; for (int& x : fCtl) x = -1;
+        fLfoVoice = -1; fLastOn = -1; fCtlAny = false; fLegatoNext = false; fCurProg = -1; fLevelDirty = false; for (int& o : fOver) o = -1; for (int& x : fCtl) x = -1;
         fPorta = 0; fPortaAcc = 0; fDetuneKf = 0; fVolAtt = 0; fFadeAtt = 0; fPLfo = mx::PitchLfo(); fALfo = mx::AmpLfo(); fDelay = fDelayCnt = 0;
         fRnd = mx::Random(); fNextTick = 0; fLastOnTime = 0;
     }
@@ -53,12 +53,29 @@ public:
         if (!v.valid) return;
         fLastProg = prog;
         catchUpTicks();                 // MXDRV runs this clock's LFO step before the note command
+        fPorta = 0; fPortaAcc = 0;      // cleared by every note command; a portamento item sent with it sets it again
+        resolveControl();               // a complete control packet sent with this note applies first
+        if (fLegatoNext) {
+            fLegatoNext = false;
+            if (fLastOn >= 0 && fCh[fLastOn].held) {
+                // tie into another pitch (&): retune the sounding note, no key-on, LFOs keep running
+                ChState& ch = fCh[fLastOn];
+                ch.note = note;
+                anchorTicks();
+                ch.offKf = fDetuneKf + fPLfo.kf();
+                if (prog != ch.loaded) { loadVoice(fLastOn, prog); ch.levelKey = -1; }
+                setPitch(fLastOn);
+                return;
+            }
+        }
+        if (prog != fCurProg) { clearOverrides(); fCurProg = prog; } // a different voice means an @ command in MXDRV
+        // after a v or @, MXDRV rewrites the carrier TLs at the next key-on (over any y write since)
+        if (fLevelDirty) { clearTlOverrides(); fLevelDirty = false; }
         int c = allocate(note);
         ChState& ch = fCh[c];
         write(0x08, c);                 // key off now, key on after one chip sample
         ch.note = note; ch.held = true; ch.age = ++fAge;
         fLastOn = c; fLastOnTime = fNow;
-        fPorta = 0; fPortaAcc = 0;      // a portamento control note at the same time sets it again
         lfoKeyOn();
         anchorTicks();
         ch.offKf = fDetuneKf + fPLfo.kf(); ch.amAtt = fALfo.att(); ch.volAtt = fVolAtt; ch.levelKey = -1;
@@ -86,7 +103,7 @@ public:
         switch (cc) {
         case 7: fVol = val; refreshLevels(); break;
         case 11: fExpr = val; refreshLevels(); break;
-        case 10: fPan = val; refreshLevels(); break;
+        case 10: fPan = val; refreshPan(); break; // MXDRV's p writes only RL/FB/CON
         case 101: fRpnMsb = val; break;
         case 100: fRpnLsb = val; break;
         case 6: if (fRpnMsb == 0 && fRpnLsb == 0) fBendRange = std::clamp(val, 0, 48); break;
@@ -118,7 +135,7 @@ public:
     }
 
 private:
-    struct ChState { int note = -1; bool held = false; bool pendingKeyOn = false; unsigned age = 0; int loaded = -2; int levelKey = -1;
+    struct ChState { int note = -1; bool held = false; bool pendingKeyOn = false; unsigned age = 0; int loaded = -2; int levelKey = -1; int tlProg = -1; int att = 0;
                      int offKf = 0, amAtt = 0, volAtt = 0; };
 
     // ---- MXDRV control notes ----
@@ -157,7 +174,8 @@ private:
         int p = 1;
         auto rd = [&]() -> int { int v = 0, mul = 1, x, i = 0; do { if (p >= n) return v; x = b[p++]; v += (x & 63) * mul; mul *= 63; } while ((x & 64) && ++i < 5); return v; };
         auto sg = [](int u) { return (u & 1) ? -((u + 1) >> 1) : (u >> 1); };
-        bool lfoSet = false;
+        bool lfoSet = false, delaySet = false;
+        const int late = (b[0] >> 4) & 7; // the packet belongs to `late` clocks ago (it did not fit then)
         while (p < n) {
             int tag = b[p++], type = tag >> 4, param = tag & 15;
             switch (type) {
@@ -171,15 +189,38 @@ private:
                 lfoSet = true;
                 break;
             }
-            case 4: fDelay = rd() & 0xff; break;
+            case 4:
+                if (param == 1) fLegatoNext = true;
+                else if (param == 2) { // @ during a note: MXDRV reloads the voice of the sounding note at once
+                    int slot = rd();
+                    // MXDRV's @: on a keyed-on note the whole voice is written at once; otherwise only the voice
+                    // pointer changes (a following v recomputes the carrier TLs from it, the rest waits for the key-on)
+                    if (slot >= 0 && slot < 128 && fBank.voice[slot].valid) {
+                        clearOverrides(); fCurProg = slot;
+                        if (fLastOn >= 0) {
+                            ChState& ch = fCh[fLastOn];
+                            if (ch.held) { ch.loaded = -2; loadVoice(fLastOn, slot); }
+                            else ch.tlProg = slot;
+                        }
+                    }
+                }
+                else if (param == 3) { int reg = rd() & 0xff, data = rd() & 0xff; regWrite(reg, data); }
+                else { fDelay = rd() & 0xff; delaySet = true; }
+                break;
             case 5: { int v = rd(); if (v > 0) fClockSec = v * 256e-6; break; }
-            case 6: fVolAtt = std::min(127, rd()); if (fLastOn >= 0) fCh[fLastOn].levelKey = -1; break;
+            case 6: fVolAtt = std::min(127, rd()); clearTlOverrides(); fLevelDirty = true; if (fLastOn >= 0) fCh[fLastOn].levelKey = -1; break;
             case 7: { int v = std::min(127, rd()); if (v != fFadeAtt) { fFadeAtt = v; refreshLevels(); } break; } // fade-out
             default: p = n; break;
             }
         }
         // an LFO command in the same clock as a key-on comes first in MXDRV: redo the key-on delay
-        if (lfoSet && fLastOn >= 0 && fNow - fLastOnTime <= 64) lfoKeyOn();
+        if (late == 0) { if (lfoSet && fLastOn >= 0 && fNow - fLastOnTime <= 64) lfoKeyOn(); }
+        else if ((lfoSet || delaySet) && fLastOn >= 0
+                 && std::fabs((double)(fNow - fLastOnTime) - late * clockSamples()) <= clockSamples() * 0.5 + 64) {
+            // the key-on was `late` clocks ago: redo it with the new LFO / delay and run the clocks since then
+            lfoKeyOn();
+            for (int i = 0; i < late; i++) lfoTick();
+        }
     }
     /** Key-on (not a tie): with an LFO delay, MXDRV zeroes both LFOs and restarts them after the delay. */
     void lfoKeyOn()
@@ -198,9 +239,13 @@ private:
     void mdxTick()
     {
         if (fPorta) fPortaAcc = (int32_t)((uint32_t)fPortaAcc + (uint32_t)(fPorta * 256));
+        lfoTick();
+        updateCurrent();
+    }
+    void lfoTick()
+    {
         if (fDelay != 0 && fDelayCnt != 0) delayTick();
         else { if (fPLfo.on) fPLfo.step(fRnd); if (fALfo.on) fALfo.step(fRnd); }
-        updateCurrent();
     }
     double clockSamples() const { return std::max(1.0, fClockSec * chipRate()); }
     /** Run the clock that falls on this moment before applying events of the same clock. */
@@ -214,7 +259,10 @@ private:
         int off = fDetuneKf + (fPortaAcc >> 16) + fPLfo.kf();
         int am = fALfo.att();
         if (off != ch.offKf) { ch.offKf = off; setPitch(fLastOn); }
-        if (am != ch.amAtt || fVolAtt != ch.volAtt) { ch.amAtt = am; ch.volAtt = fVolAtt; applyLevel(fLastOn); }
+        if (am != ch.amAtt || fVolAtt != ch.volAtt) {
+            if (am != ch.amAtt) clearTlOverrides(); // MXDRV recomputes the carrier TLs from the voice
+            ch.amAtt = am; ch.volAtt = fVolAtt; applyLevel(fLastOn);
+        }
     }
 
     void write(int reg, int data) { fChip.write_address(reg); fChip.write_data(data & 0xff); }
@@ -239,6 +287,7 @@ private:
     void loadVoice(int c, int prog)
     {
         ChState& ch = fCh[c];
+        if (ch.tlProg >= 0) { ch.tlProg = -1; ch.levelKey = -1; }
         const OpmVoice& v = fBank.voice[prog];
         if (ch.loaded != prog) {
             static const int fileToReg[4] = { 0, 2, 1, 3 }; // M1,C1,M2,C2 -> register slots M1,M2,C1,C2
@@ -259,20 +308,45 @@ private:
             ch.loaded = prog;
             ch.levelKey = -1;
         }
+        // y-command overrides (MXDRV has one fixed chip channel per MDX channel; we may use another one)
+        for (int row = 0x38; row < 0x100; row += 8) {
+            if (row >= 0x60 && row < 0x80) continue; // TL: applyLevel
+            int o = fOver[(row - 0x20) >> 3];
+            if (o >= 0) write(row + c, o);
+        }
         applyLevel(c);
+    }
+
+    /** y command (FE): a direct register write as MXDRV does it on this channel. */
+    void regWrite(int reg, int data)
+    {
+        if (reg < 0x20) { write(reg, data); return; } // chip-wide (LFO, noise)
+        const int row = reg & 0xf8;
+        if (row == 0x28 || row == 0x30) { if (fLastOn >= 0) write(row + fLastOn, data); return; } // pitch: rewritten by the driver anyway
+        fOver[(row - 0x20) >> 3] = data;
+        if (fLastOn < 0) return;
+        if (row == 0x20 || (row >= 0x60 && row < 0x80)) { fCh[fLastOn].levelKey = -1; applyLevel(fLastOn); }
+        else write(row + fLastOn, data);
+    }
+    void clearTlOverrides() { for (int r = 0x60; r < 0x80; r += 8) fOver[(r - 0x20) >> 3] = -1; }
+    void clearOverrides()
+    {
+        bool any = false;
+        for (int& o : fOver) { any |= o >= 0; o = -1; }
+        if (any) for (auto& ch : fCh) ch.loaded = -2; // chip channels still hold overridden values: reload on next use
     }
 
     void applyLevel(int c)
     {
         ChState& ch = fCh[c];
         if (ch.loaded < 0) return;
-        const OpmVoice& v = fBank.voice[ch.loaded];
+        const OpmVoice& v = fBank.voice[ch.tlProg >= 0 ? ch.tlProg : ch.loaded]; // carrier TLs (see VOICE)
+        const OpmVoice& lv = fBank.voice[ch.loaded];
         // amplitude LFO: MXDRV adds the high byte to the volume; an overflow (>= 0x80) mutes
         // MXDRV: volume + amplitude-LFO high byte, any overflow (>= 0x80) becomes 0x7f
         int mxAtt = ch.volAtt + ch.amAtt; if (mxAtt >= 0x80) mxAtt = 0x7f;
         int att = std::min(127, attFromCC(fVol) + attFromCC(fExpr) + mxAtt + fFadeAtt);
         int key = att * 8 + panBits();
-        (void)0;
         if (key == ch.levelKey) return;
         ch.levelKey = key;
         if (traceFile() && c == fLastOn) std::fprintf(traceFile(), "%.6f a %d\n", fNow / chipRate(), att);
@@ -280,13 +354,25 @@ private:
         static const int fileToReg[4] = { 0, 2, 1, 3 };
         for (int k = 0; k < 4; k++) {
             int rs = fileToReg[k];
-            int tl = v.op[k].tl + (((carriers[v.con & 7] >> k) & 1) ? att : 0);
-            if (traceFile() && c == fLastOn && rs == 3) std::fprintf(traceFile(), "%.6f t %d\n", fNow / chipRate(), std::min(127, tl));
+            const bool car = (carriers[v.con & 7] >> k) & 1;
+            int tl = car ? v.op[k].tl + att : lv.op[k].tl;
+            if (fOver[(0x60 + rs * 8 - 0x20) >> 3] >= 0) tl = fOver[(0x60 + rs * 8 - 0x20) >> 3] & 127; // y command
+            if (traceFile() && c == fLastOn) std::fprintf(traceFile(), "%.6f t%d %d\n", fNow / chipRate(), rs, std::min(127, tl)); // TL per register slot (M1,M2,C1,C2)
             write(0x60 + rs * 8 + c, std::min(127, tl));
         }
-        int rl = (att >= 127) ? 0 : panBits();
-        write(0x20 + c, (rl << 6) | ((v.fl & 7) << 3) | (v.con & 7));
+        ch.att = att;
+        writeRlFlCon(c);
     }
+    void writeRlFlCon(int c)
+    {
+        const ChState& ch = fCh[c];
+        if (ch.loaded < 0) return;
+        const OpmVoice& lv = fBank.voice[ch.loaded];
+        int rl = (ch.att >= 127) ? 0 : panBits();
+        const int flcon = fOver[0] >= 0 ? (fOver[0] & 0x3f) : (((lv.fl & 7) << 3) | (lv.con & 7));
+        write(0x20 + c, (rl << 6) | flcon);
+    }
+    void refreshPan() { for (int c = 0; c < 8; c++) writeRlFlCon(c); }
 
     void refreshLevels() { for (int c = 0; c < 8; c++) applyLevel(c); }
 
@@ -316,6 +402,10 @@ private:
     int fCtl[kCtlKeys] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
     uint64_t fCtlAt[kCtlKeys] = {};
     bool fCtlAny = false;
+    int fOver[28] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 }; // y-command register overrides, rows 0x20..0xf8
+    int fCurProg = -1;
+    bool fLevelDirty = false;
+    bool fLegatoNext = false; // LEGATO control item: the next note is a tie into another pitch
     int fLastOn = -1;
     uint64_t fLastOnTime = 0;
     // MDX channel state (one MDX channel per plugin instance)

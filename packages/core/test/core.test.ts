@@ -186,6 +186,28 @@ describe('OPM68 control notes', () => {
     expect([...p.keys()]).toEqual([0, 1]);
     for (const b of p.values()) expect(b.length).toBeLessThanOrEqual(15);
     expect([...p.values()].flatMap((b) => decodePacket(b)).map((x) => x.k).sort()).toEqual(['alfo', 'clock', 'delay', 'detune', 'plfo', 'vol']);
+    expect(p.get(0)![0] >> 4).toBe(0);
+    expect(p.get(1)![0] >> 4).toBe(1); // carried items say they belong one clock earlier
+  });
+  it('keeps the LFO parameters when MPON follows MP in the same clock', () => {
+    const src = mdx([0xfd, 0x00, 0xec, 0x02, 0x00, 0x08, 0x02, 0x00, 0xe9, 4, 0xec, 0x81, 0xa0, 47, 0xf1, 0]);
+    const r = convert(src, null, { fmMode: 'opm68' });
+    expect(r.seq.events.filter((e) => e.type === 'plfo').map((e) => (e as { mode: number }).mode)).toEqual([2]);
+    expect(packets(r.midi).flat().filter((x) => x.k === 'plfo')).toEqual([{ k: 'plfo', mode: 4, per: 8, amp: 0x200 }]);
+  });
+  it('replays y (register writes) on the channel the register belongs to', () => {
+    // channel A: y $68,$20 (TL of M2 on channel A) and y $12,200 (tempo)
+    const src = mdx([0xfd, 0x00, 0xfe, 0x68, 0x20, 0xfe, 0x12, 200, 0x80 + 30, 24, 0xf1, 0]);
+    const r = convert(src, null, { fmMode: 'opm68' });
+    expect(r.seq.events.some((e) => e.type === 'tempo' && (e as { timerB: number }).timerB === 200)).toBe(true);
+    expect(packets(r.midi).flat()).toContainEqual({ k: 'reg', r: 0x68, v: 0x20 });
+  });
+  it('turns a tie into another pitch into legato (no key-on)', () => {
+    const src = mdx([0xfd, 0x00, 0xf7, 0x80 + 30, 24, 0x80 + 35, 24, 0xf1, 0]);
+    const r = convert(src, null, { fmMode: 'opm68' });
+    const ons = r.seq.events.filter((e) => e.type === 'noteOn') as { legato?: boolean }[];
+    expect(ons.map((e) => !!e.legato)).toEqual([false, true]);
+    expect(packets(r.midi).flat()).toContainEqual({ k: 'legato' });
   });
 });
 

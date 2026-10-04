@@ -148,7 +148,11 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
       for (const c of cur) { c.voice = -1; c.att = VOLTAB[8]; }
       for (const e of seq.events) {
         if (e.ch < 0 || e.ch >= 8) continue;
-        if (e.type === 'voice' && mdx.voices.has(e.voice)) cur[e.ch].voice = e.voice;
+        if (e.type === 'voice' && mdx.voices.has(e.voice)) {
+          cur[e.ch].voice = e.voice;
+          // OPM68: a voice change can also hit a sounding note (sent as a VOICE control item), so give it a slot
+          if (nativeCtl) { const k = `${e.voice}:0`; if (!perCh[e.ch].has(k)) { perCh[e.ch].add(k); comboOrder[e.ch].push(k); } }
+        }
         else if (e.type === 'volume') cur[e.ch].att = e.att;
         else if (e.type === 'noteOn' && cur[e.ch].voice >= 0) {
           const k = `${cur[e.ch].voice}:${qAtt(e.ch, cur[e.ch].att)}`;
@@ -188,6 +192,8 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   let lastUsage: (ChannelUsage & { t0: number; t1: number }) | null = null;
   const timeline = new Map<number, { t: number; voice: number }[]>();
   const bakeState = Array.from({ length: 8 }, () => ({ voice: -1, att: VOLTAB[8], prog: -1 }));
+  /** FM channel -> clock of the last key-on (null: none yet). */
+  const lastOnAt: (number | null)[] = new Array(8).fill(null);
 
   // PCM key assignment
   const base = seq.pcmKeys.length <= 92 ? 36 : 0;
@@ -256,8 +262,13 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
   function ctl(ch: number, tick: number, it: CtlItem) {
     const m = ctlItems[ch];
     const list = m.get(tick) ?? [];
-    const i = list.findIndex((x) => x.k === it.k); // one item of a kind per clock: the last one wins
-    if (i >= 0) list.splice(i, 1);
+    // one item of a kind per clock: the last one wins, except that an LFO "set" (mode >= 2) keeps its
+    // parameters when an on/off follows (on after a set is redundant, off is applied after it)
+    const i = list.findIndex((x) => x.k === it.k && (it.k !== 'reg' || (x.k === 'reg' && x.r === it.r))); // y: one per register
+    const prev = i >= 0 ? list[i] : undefined;
+    const isSet = (x?: CtlItem) => !!x && (x.k === 'plfo' || x.k === 'alfo') && x.mode >= 2;
+    if (isSet(prev) && (it.k === 'plfo' || it.k === 'alfo') && it.mode < 2) { if (it.mode === 1) return; }
+    else if (i >= 0) list.splice(i, 1);
     list.push(it);
     m.set(tick, list);
   }
@@ -313,8 +324,10 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
     const T = e.t * S;
     if (e.type === 'voice' && mdx.voices.has(e.voice)) curVoice[e.ch] = e.voice;
     if (e.type === 'volume') curAtt[e.ch] = e.att;
+    if (e.ch < 8 && e.type === 'noteOn' && !e.legato) lastOnAt[e.ch] = e.t;
     switch (e.type) {
       case 'noteOn': {
+        if (nativeCtl && e.ch < 8 && e.legato) ctl(e.ch, e.t, { k: 'legato' });
         let key = e.ch < 8 ? e.key : pcmKeys[e.key].midiKey;
         if (key < 0 || key > 127) { warnings.push(`音域外のノート ${key} を省略`); return; }
         recordUsage(e.ch, e.t, e.ch < 8 ? undefined : e.key);
@@ -347,7 +360,10 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
         const sk = `${e.ch}:${key}`;
         if (sounding.has(sk)) { key = sounding.get(sk)!; sounding.delete(sk); }
         if (key < 0 || key > 127) return;
-        tr.add(T, [0x80 | mc, key, 0], 2);
+        // OPM68 legato: let the old note overlap the new one by half a clock, so the plugin sees the new
+        // note while the old one is still held (whatever order the DAW sends same-time events in)
+        if (nativeCtl && e.ch < 8 && e.legato) tr.add(T + Math.max(1, S >> 1), [0x80 | mc, key, 0], 2);
+        else tr.add(T, [0x80 | mc, key, 0], 2);
         break;
       }
       case 'voice': {
@@ -357,7 +373,17 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
           if (!warnings.includes(w)) warnings.push(w);
           break;
         }
-        if (bake && e.ch < 8) { bakeState[e.ch].voice = e.voice; programs[e.voice] = -1; break; }
+        if (bake && e.ch < 8) {
+          bakeState[e.ch].voice = e.voice; programs[e.voice] = -1;
+          // MXDRV loads the voice at once: a note that is still sounding changes timbre (no key-on)
+          // (MXDRV recomputes the carrier TLs from the new voice even while the note is in its release)
+          const held = lastOnAt[e.ch];
+          if (nativeCtl && held !== null && e.t > held) {
+            const slot = comboSlot[e.ch].get(`${e.voice}:0`);
+            if (slot !== undefined) ctl(e.ch, e.t, { k: 'voice', v: slot });
+          }
+          break;
+        }
         const prog = fmMode === 'vopm'
           ? (slotMap.get(e.voice) ?? 0)
           : options.programMap?.[e.voice] ?? defaultProgramFor(mdx.voices.get(e.voice));
@@ -385,6 +411,15 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
         else if (e.type === 'detune') ctl(e.ch, e.t, { k: 'detune', v: e.value });
         else if (e.type === 'lfodelay') ctl(e.ch, e.t, { k: 'delay', v: e.delay });
         else ctl(e.ch, e.t, { k: e.type, mode: lfoMode(e.mode), per: e.per, amp: e.amp });
+        break;
+      }
+      case 'reg': {
+        // y command: OPM68 replays it on the channel the register belongs to (chip-wide registers on every FM channel)
+        if (!nativeCtl) break;
+        const { reg, data } = e;
+        if (reg === 0x08 || (reg >= 0x10 && reg <= 0x14)) break; // key on/off and timers stay with the driver
+        if (reg >= 0x20) ctl(reg & 7, e.t, { k: 'reg', r: reg, v: data });
+        else for (let c = 0; c < 8; c++) if (seq.usedChannels[c]) ctl(c, e.t, { k: 'reg', r: reg, v: data });
         break;
       }
       case 'amlfo': {

@@ -86,11 +86,14 @@ function isLzx(d: Uint8Array, base: number): boolean {
 function parseVoice(d: Uint8Array, p: number): OpmVoice {
   const flcon = d[p + 1];
   const ops: OpmOperator[] = [];
+  // carriers in MDX (register) order M1, M2, C1, C2; MXDRV adds the volume to a carrier's TL and
+  // saturates at 0x7f, so a carrier TL byte >= 0x80 means silent (not TL & 0x7f)
+  const carriers = [8, 8, 8, 8, 12, 14, 14, 15][flcon & 7];
   for (let k = 0; k < 4; k++) {
     const dtmul = d[p + 3 + k], tl = d[p + 7 + k], ksar = d[p + 11 + k];
     const amed1r = d[p + 15 + k], dt2d2r = d[p + 19 + k], d1lrr = d[p + 23 + k];
     ops.push({
-      dt1: (dtmul >> 4) & 7, mul: dtmul & 15, tl: tl & 127,
+      dt1: (dtmul >> 4) & 7, mul: dtmul & 15, tl: tl >= 0x80 && (carriers >> k) & 1 ? 127 : tl & 127,
       ks: ksar >> 6, ar: ksar & 31, ame: amed1r >> 7, d1r: amed1r & 31,
       dt2: dt2d2r >> 6, d2r: dt2d2r & 31, d1l: d1lrr >> 4, rr: d1lrr & 15,
     });

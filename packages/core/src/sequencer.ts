@@ -5,12 +5,13 @@
 import type { MdxFile } from './mdx.js';
 
 export type SeqEvent =
-  | { t: number; ch: number; type: 'noteOn'; note: number; key: number }
-  | { t: number; ch: number; type: 'noteOff'; key: number }
+  | { t: number; ch: number; type: 'noteOn'; note: number; key: number; legato?: boolean } // legato: tie to another note (no key-on, LFOs keep running)
+  | { t: number; ch: number; type: 'noteOff'; key: number; legato?: boolean } // legato: ends the note a legato noteOn replaced
   | { t: number; ch: number; type: 'voice'; voice: number }
   | { t: number; ch: number; type: 'volume'; att: number } // OPM TL attenuation (0.75 dB steps)
   | { t: number; ch: number; type: 'pan'; pan: number }   // 0 off, 1 L, 2 R, 3 C
   | { t: number; ch: number; type: 'pitch'; semis: number } // offset from note in semitones
+  | { t: number; ch: number; type: 'reg'; reg: number; data: number } // y command (FE): OPM register write
   | { t: number; ch: number; type: 'amlfo'; att: number }  // MXDRV amplitude-LFO attenuation added to the volume (0..127)
   // nativePitch only: the player runs MXDRV's portamento / detune / LFOs itself
   | { t: number; ch: number; type: 'porta'; raw: number; keep?: boolean } // F2 value (1/256 KF per clock) for the note (or tie) starting now; keep: stop without resetting the offset
@@ -177,9 +178,9 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
     const att = c.vol & 0x80 ? c.vol & 0x7f : VOLTAB[c.vol & 15];
     events.push({ t, ch: c.idx, type: 'volume', att });
   };
-  const keyOff = (c: Ch, at: number) => {
+  const keyOff = (c: Ch, at: number, legato = false) => {
     if (c.curKey !== null) {
-      events.push({ t: at, ch: c.idx, type: 'noteOff', key: c.curKey });
+      events.push({ t: at, ch: c.idx, type: 'noteOff', key: c.curKey, ...(legato ? { legato } : {}) });
       c.curKey = null;
     }
   };
@@ -236,6 +237,12 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
     if (c.tiePrev && !c.pcm && c.curKey === key) {
       // tie: keep the note sounding; LFOs keep running
       if (portaEv && (c.porta !== 0 || hadPorta)) pushPorta(c);
+    } else if (c.tiePrev && !c.pcm && c.curKey !== null) {
+      // tie (&) into a different note: MXDRV changes the pitch without a key-on (slur); LFOs keep running
+      events.push({ t, ch: c.idx, type: 'noteOn', note, key, legato: true });
+      keyOff(c, t, true);
+      if (portaEv && (c.porta !== 0 || hadPorta)) pushPorta(c);
+      c.curKey = key;
     } else {
       if (c.curKey !== null) keyOff(c, t);
       if (c.keyOnDelay > 0 && c.keyOnDelay < len) {
@@ -279,7 +286,10 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
       }
       switch (cmd) {
         case 0xff: events.push({ t, ch: -1, type: 'tempo', timerB: u8(p + 1) }); c.pos = p + 2; break;
-        case 0xfe: c.pos = p + 3; break; // OPM register write (ignored)
+        case 0xfe: // y: direct OPM register write (y$12 is MXDRV's tempo, like @t)
+          if (u8(p + 1) === 0x12) events.push({ t, ch: -1, type: 'tempo', timerB: u8(p + 2) });
+          else if (!c.pcm) events.push({ t, ch: c.idx, type: 'reg', reg: u8(p + 1), data: u8(p + 2) });
+          c.pos = p + 3; break;
         case 0xfd:
           if (c.pcm) c.bank = u8(p + 1); else events.push({ t, ch: c.idx, type: 'voice', voice: u8(p + 1) });
           c.pos = p + 2; break;
@@ -356,8 +366,16 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
           if (cmd === 0xec) setPitchLfo(c.plfo, m, per, amp); else setAmpLfo(c.alfo, m, per, amp);
           if (portaEv) {
             const type = cmd === 0xec ? 'plfo' : 'alfo';
-            replaceSameTick(c.idx, type);
-            events.push({ t, ch: c.idx, type, mode: m, per, amp });
+            // MP/MA (set) followed by MPON/MPOF in the same clock (common: "MP..., MD, MPON"): the set
+            // carries the parameters, so keep it. ON after a set is the same as the set (both restart);
+            // OFF is kept as a second event so a later MPON still finds the parameters.
+            let prevSet = false;
+            for (let i = events.length - 1; i >= 0 && events[i].t === t; i--) {
+              const e = events[i];
+              if (e.ch === c.idx && e.type === type) { prevSet = (e as { mode: number }).mode < 0x80; break; }
+            }
+            if (!(prevSet && m & 0x80)) replaceSameTick(c.idx, type);
+            if (!(prevSet && m === 0x81)) events.push({ t, ch: c.idx, type, mode: m, per, amp });
           }
           break;
         }

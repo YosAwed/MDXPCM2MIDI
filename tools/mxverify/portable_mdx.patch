@@ -1,0 +1,26 @@
+diff --git a/examples/simple_mdx2wav/main.c b/examples/simple_mdx2wav/main.c
+index bfb8962..cae0211 100644
+--- a/examples/simple_mdx2wav/main.c
++++ b/examples/simple_mdx2wav/main.c
+@@ -421,7 +421,7 @@ int main(
+ 	}
+ 
+ 	/* 再生時間を求める */
+-	float songDurationInSeconds = MXDRV_MeasurePlayTime2(&context, 1, 0) / 1000.0f;
++	float songDurationInSeconds = getenv("MXSECS") ? (float)atof(getenv("MXSECS")) : MXDRV_MeasurePlayTime2(&context, 1, 0) / 1000.0f;
+ 	printf("song duration %.1f(sec)\n", songDurationInSeconds);
+ 
+ 	/* MDX 再生 */
+diff --git a/src/mxdrv/mxdrv.cpp b/src/mxdrv/mxdrv.cpp
+index 842e34e..6eee260 100644
+--- a/src/mxdrv/mxdrv.cpp
++++ b/src/mxdrv/mxdrv.cpp
+@@ -10088,6 +10088,8 @@ static void L_WRITEOPM(
+ 	OPM_SUB();
+ #endif
+ 	D1 &= 0xff;
++	{ static FILE *mxlog = (FILE*)-1; if (mxlog == (FILE*)-1) mxlog = getenv("MXLOG") ? fopen(getenv("MXLOG"), "w") : NULL;
++	  if (mxlog) fprintf(mxlog, "%u %u %u\n", (unsigned)G.L001ba6, (unsigned)D1, (unsigned)(D2 & 0xff)); }
+ #if MXDRV_ENABLE_PORTABLE_CODE
+ 	OPMBUF[D1] = (uint8_t)D2;
+ #else

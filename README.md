@@ -81,6 +81,7 @@ node corpus.mjs summary out.jsonl
 - プラグインの導入・FL Studio での使い方・制御ノートの仕様は [plugin/opm68/README.md](plugin/opm68/README.md) を参照してください。
 - FL Studio で制御ノートが低音として鳴る場合は古いプラグインが残っています。OPM68 の UI の版表記 (v0.6) を確認してください。v0.5 以降の MIDI は v0.4 以前のプラグインでは正しく鳴りません。
 - フェードアウト (E7 / `fadeSeconds`) も制御ノート (FADE) で送ります (v0.6)。パンは CC10 のままです。
+- v0.6 で MXDRV との一致度を上げました: 同じクロックの MP と MPON、タイ (&) で音程を変えるスラー (キーオンしない)、発音中の @、y コマンド (レジスタ直接書き込み、y$12 のテンポ)、制御パケットが溢れたときの遅れ補正、TL 0x80 以上のキャリア、CON 4 のキャリア判定。`tools/mxverify` で 395 曲中 97.6% の FM チャンネルが全クロック一致
 
 ### FL Studio プロジェクト (.flp) 出力 (v0.6)
 - OPM68 モードでは `.flp` も作れます (Web UI の「.flp」ボタン / CLI `--flp テンプレート.flp`)。MIDI を読み込んでチャンネルごとに OPM68 へ差し替える手間がなくなります。
