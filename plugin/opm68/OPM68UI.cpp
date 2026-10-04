@@ -15,15 +15,17 @@ class OPM68UI : public UI, public ButtonEventHandler::Callback {
 public:
     OPM68UI()
         : UI(DISTRHO_UI_DEFAULT_WIDTH, DISTRHO_UI_DEFAULT_HEIGHT),
-          fLoad(this, this), fVel(this, this), fMono(this, this), fClock(this, this)
+          fLoad(this, this), fVel(this, this), fMono(this, this), fClock(this, this), fLpf(this, this), fLowCut(this, this)
     {
         loadSharedResources();
         setup(fLoad, 12, 44, 120, "Load .OPM...");
         setup(fVel, 140, 44, 120, "");
         setup(fMono, 268, 44, 110, "");
         setup(fClock, 386, 44, 122, "");
+        setup(fLpf, 12, 80, 170, "");
+        setup(fLowCut, 190, 80, 170, "");
         for (float& p : fParams) p = 0;
-        fParams[kParamVelProgram] = 1; fParams[kParamClock4MHz] = 1; fParams[kParamLastVoice] = -1;
+        fParams[kParamVelProgram] = 1; fParams[kParamClock4MHz] = 1; fParams[kParamLastVoice] = -1; fParams[kParamX68Lpf] = 1;
         updateLabels();
         setGeometryConstraints(DISTRHO_UI_DEFAULT_WIDTH, DISTRHO_UI_DEFAULT_HEIGHT, true);
     }
@@ -58,26 +60,26 @@ protected:
         fontSize(20); fillColor(Color(251, 146, 60)); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
         text(12, 20, "OPM68", nullptr);
         fontSize(13); fillColor(Color(160, 164, 172));
-        text(84, 21, "YM2151 for MDX  -  ymfm core  -  v0.6.3", nullptr);
+        text(84, 21, "YM2151 for MDX  -  ymfm core  -  v0.6.4", nullptr);
 
         // bank info
         fontSize(13); fillColor(Color(236, 235, 231));
         std::string name = fFile.isEmpty() ? std::string("(no bank loaded)") : baseName(fFile.buffer());
         char buf[256];
         std::snprintf(buf, sizeof(buf), "Bank: %s   (%d voices)", name.c_str(), fBank.count);
-        text(12, 96, buf, nullptr);
+        text(12, 132, buf, nullptr);
 
         const int last = (int)fParams[kParamLastVoice];
         if (last >= 0) {
             std::snprintf(buf, sizeof(buf), "Playing: %03d  %s", last, fBank.voice[last].valid ? fBank.voice[last].name.c_str() : "");
             fillColor(Color(134, 239, 172));
-            text(12, 116, buf, nullptr);
+            text(12, 152, buf, nullptr);
         }
 
         // voice list (two columns)
         fontSize(11.5f);
         int row = 0;
-        const float top = 140, lh = 15;
+        const float top = 176, lh = 15;
         const int rows = (int)((H - top - 8) / lh);
         for (int i = 0; i < 128 && rows > 0; i++) {
             if (!fBank.voice[i].valid) continue;
@@ -102,6 +104,12 @@ protected:
         else if (w == &fVel) toggle(kParamVelProgram);
         else if (w == &fMono) toggle(kParamMono);
         else if (w == &fClock) toggle(kParamClock4MHz);
+        else if (w == &fLpf) toggle(kParamX68Lpf);
+        else if (w == &fLowCut) {
+            fParams[kParamLowCut] = (float)(((int)(fParams[kParamLowCut] + 0.5f) + 1) % 3);
+            editParameter(kParamLowCut, true); setParameterValue(kParamLowCut, fParams[kParamLowCut]); editParameter(kParamLowCut, false);
+            updateLabels(); repaint();
+        }
     }
 
 private:
@@ -121,6 +129,9 @@ private:
         fVel.setLabel(fParams[kParamVelProgram] > 0.5f ? "Vel=Voice: ON" : "Vel=Voice: OFF");
         fMono.setLabel(fParams[kParamMono] > 0.5f ? "Mono: ON" : "Mono: OFF");
         fClock.setLabel(fParams[kParamClock4MHz] > 0.5f ? "Clock: 4MHz" : "Clock: 3.58MHz");
+        fLpf.setLabel(fParams[kParamX68Lpf] > 0.5f ? "X68 Low-pass: ON" : "X68 Low-pass: OFF");
+        const int lc = (int)(fParams[kParamLowCut] + 0.5f);
+        fLowCut.setLabel(lc == 1 ? "Low cut: 70 Hz" : lc == 2 ? "Low cut: 110 Hz" : "Low cut: OFF");
     }
     static std::string baseName(const char* p)
     {
@@ -129,7 +140,7 @@ private:
         return k == std::string::npos ? s : s.substr(k + 1);
     }
 
-    Button fLoad, fVel, fMono, fClock;
+    Button fLoad, fVel, fMono, fClock, fLpf, fLowCut;
     float fParams[kParamCount];
     String fFile;
     OpmBank fBank;

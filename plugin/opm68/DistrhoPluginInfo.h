@@ -21,7 +21,7 @@
 #define DISTRHO_UI_FILE_BROWSER        1
 #define DISTRHO_UI_USE_NANOVG          1
 #define DISTRHO_UI_DEFAULT_WIDTH       520
-#define DISTRHO_UI_DEFAULT_HEIGHT      300
+#define DISTRHO_UI_DEFAULT_HEIGHT      336
 
 enum Parameters {
     kParamVolume = 0,   // dB
@@ -31,6 +31,8 @@ enum Parameters {
     kParamClock4MHz,
     kParamBendRange,
     kParamLastVoice,    // output: voice of the last note
+    kParamX68Lpf,       // X68000 output low-pass (on by default; matches MXDRV)
+    kParamLowCut,       // low cut (coupling capacitors): 0 off, 1 = 70 Hz, 2 = 110 Hz
     kParamCount
 };
 

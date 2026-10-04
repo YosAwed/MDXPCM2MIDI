@@ -12,6 +12,8 @@ int main(int argc, char** argv) {
     if (getenv("OPMTRACE")) OpmEngine::traceFile() = std::fopen(getenv("OPMTRACE"), "w");
     OpmEngine eng; eng.setBank(bank); eng.setVelocityProgram(argc < 5 || argv[4][0] != '0');
     eng.setMono(!getenv("OPMPOLY")); // MDX conversions run mono (OPMPOLY=1: 8-voice poly)
+    eng.setX68Lpf(!getenv("OPMNOLPF")); // X68000 output low-pass (OPMNOLPF=1: off)
+    if (getenv("OPMLOWCUT")) eng.setLowCut(atoi(getenv("OPMLOWCUT"))); // 1 = 70 Hz, 2 = 110 Hz
     const double sr = 48000, ratio = eng.chipRate() / sr;
     std::ifstream ev(argv[2]); FILE* out = std::fopen(argv[3], "wb");
     long frame = 0, t; int a, b, c; double phase = 1; float pl = 0, pr = 0, cl = 0, cr = 0;

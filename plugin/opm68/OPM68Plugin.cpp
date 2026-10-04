@@ -16,7 +16,7 @@ protected:
     const char* getMaker() const override { return "MDXPCM2MIDI"; }
     const char* getHomePage() const override { return "https://github.com/YosAwed/MDXPCM2MIDI"; }
     const char* getLicense() const override { return "BSD-3-Clause"; }
-    uint32_t getVersion() const override { return d_version(0, 6, 3); }
+    uint32_t getVersion() const override { return d_version(0, 6, 4); }
 
     void initParameter(uint32_t index, Parameter& p) override
     {
@@ -28,6 +28,8 @@ protected:
         case kParamMono: p.name = "Mono"; p.symbol = "mono"; p.hints |= kParameterIsBoolean | kParameterIsInteger; p.ranges = ParameterRanges(0, 0, 1); break;
         case kParamClock4MHz: p.name = "Clock 4MHz (X68000)"; p.symbol = "clock4mhz"; p.hints |= kParameterIsBoolean | kParameterIsInteger; p.ranges = ParameterRanges(1, 0, 1); break;
         case kParamBendRange: p.name = "Pitch bend range"; p.symbol = "bendrange"; p.unit = "semi"; p.hints |= kParameterIsInteger; p.ranges = ParameterRanges(12, 0, 48); break;
+        case kParamX68Lpf: p.name = "X68000 low-pass"; p.symbol = "x68lpf"; p.hints |= kParameterIsBoolean | kParameterIsInteger; p.ranges = ParameterRanges(1, 0, 1); break;
+        case kParamLowCut: p.name = "Low cut (0 off, 1 70 Hz, 2 110 Hz)"; p.symbol = "lowcut"; p.hints |= kParameterIsInteger; p.ranges = ParameterRanges(0, 0, 2); break;
         case kParamLastVoice: p.name = "Last voice"; p.symbol = "lastvoice"; p.hints = kParameterIsOutput | kParameterIsInteger; p.ranges = ParameterRanges(-1, -1, 127); break;
         }
     }
@@ -42,6 +44,8 @@ protected:
         case kParamClock4MHz: return f4MHz ? 1 : 0;
         case kParamBendRange: return fBendRange;
         case kParamLastVoice: return fLastVoice;
+        case kParamX68Lpf: return fLpf ? 1 : 0;
+        case kParamLowCut: return fLowCut;
         }
         return 0;
     }
@@ -54,6 +58,8 @@ protected:
         case kParamProgram: fProgram = (int)v; fEngine.programChange(fProgram); break;
         case kParamMono: fMono = v > 0.5f; fEngine.setMono(fMono); break;
         case kParamClock4MHz: f4MHz = v > 0.5f; fEngine.setClock4MHz(f4MHz); updateRatio(); break;
+        case kParamX68Lpf: fLpf = v > 0.5f; fEngine.setX68Lpf(fLpf); break;
+        case kParamLowCut: fLowCut = std::max(0, std::min(2, (int)(v + 0.5f))); fEngine.setLowCut(fLowCut); break;
         case kParamBendRange: fBendRange = (int)v; fEngine.setDefaultBend(fBendRange); fEngine.controlChange(101, 0); fEngine.controlChange(100, 0); fEngine.controlChange(6, fBendRange); fEngine.controlChange(101, 127); fEngine.controlChange(100, 127); break;
         }
     }
@@ -138,6 +144,7 @@ private:
     double fRatio = 62500.0 / 48000.0, fPhase = 1.0;
     float fPrevL = 0, fPrevR = 0, fCurL = 0, fCurR = 0;
     float fVolumeDb = 0, fGain = 1;
+    bool fLpf = true; int fLowCut = 0;
     bool fVelProg = true, fMono = false, f4MHz = true;
     int fProgram = 0, fBendRange = 12, fLastVoice = -1;
 

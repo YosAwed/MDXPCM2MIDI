@@ -19,7 +19,11 @@ public:
     // ---- configuration ----
     void setBank(const OpmBank& b) { fBank = b; for (int c = 0; c < 8; c++) fCh[c].loaded = -2; }
     const OpmBank& bank() const { return fBank; }
-    void setClock4MHz(bool v) { if (v != f4MHz) { f4MHz = v; } }
+    void setClock4MHz(bool v) { if (v != f4MHz) { f4MHz = v; fLpf.design(chipRate()); fHpf.design(chipRate(), fLowCut == 1 ? 70.0 : 110.0); } }
+    /** X68000 output low-pass (matches MXDRV / x68sound: -3 dB near 5.5 kHz, -13 dB at 20 kHz). */
+    void setX68Lpf(bool v) { if (v != fLpfOn) { fLpfOn = v; fLpf.clear(); } }
+    /** Optional low cut like the X68000's coupling capacitors (one pole): 0 off, 1 = 70 Hz, 2 = 110 Hz. */
+    void setLowCut(int m) { if (m != fLowCut) { fLowCut = m; fHpf.design(chipRate(), m == 1 ? 70.0 : 110.0); } }
     bool clock4MHz() const { return f4MHz; }
     double chipRate() const { return (f4MHz ? 4000000.0 : 3579545.0) / 64.0; }
     void setMono(bool v) { fMono = v; }
@@ -124,6 +128,8 @@ public:
         fChip.generate(&out);
         l = out.data[0] / 32768.0f;
         r = out.data[1] / 32768.0f;
+        if (fLpfOn) fLpf.run(l, r);
+        if (fLowCut) fHpf.run(l, r);
         ++fNow;
         if (fLfoResetClear) { fLfoResetClear = false; write(0x01, 0); }
         resolveControl();
@@ -411,7 +417,37 @@ private:
     ymfm::ym2151 fChip;
     OpmBank fBank;
     ChState fCh[8];
-    bool f4MHz = true, fMono = false, fVelProg = true;
+    bool f4MHz = true, fMono = false, fVelProg = true, fLpfOn = true;
+    /** One-pole low-pass (5.14 kHz) + RBJ biquad (22.1 kHz, Q 1.28), fitted to the MXDRV (x68sound) / OPM68 spectrum
+     *  ratio of four songs (0.2 dB rms error from 1 to 20 kHz). Runs at the chip rate. */
+    struct X68Lpf {
+        float p0 = 0, p1 = 0, b0 = 0, b1 = 0, b2 = 0, c1 = 0, c2 = 0;
+        float y1[2] = {}, xp[2] = {}, x1[2] = {}, x2[2] = {}, z1[2] = {}, z2[2] = {};
+        explicit X68Lpf(double fs = 62500.0) { design(fs); }
+        void design(double fs) {
+            const double k = std::tan(M_PI * 5136.6 / fs); // bilinear one-pole, as fitted
+            p0 = (float)(k / (1.0 + k)); p1 = (float)((k - 1.0) / (k + 1.0));
+            const double w0 = 2.0 * M_PI * std::min(22132.7, fs * 0.45) / fs, al = std::sin(w0) / (2.0 * 1.2823), c = std::cos(w0), a0 = 1.0 + al;
+            b0 = (float)((1.0 - c) / 2.0 / a0); b1 = (float)((1.0 - c) / a0); b2 = b0;
+            c1 = (float)(-2.0 * c / a0); c2 = (float)((1.0 - al) / a0);
+            clear();
+        }
+        void clear() { for (int i = 0; i < 2; i++) y1[i] = xp[i] = x1[i] = x2[i] = z1[i] = z2[i] = 0; }
+        float step(int i, float x) {
+            y1[i] = p0 * (x + xp[i]) - p1 * y1[i]; xp[i] = x;
+            const float u = y1[i], y = b0 * u + b1 * x1[i] + b2 * x2[i] - c1 * z1[i] - c2 * z2[i];
+            x2[i] = x1[i]; x1[i] = u; z2[i] = z1[i]; z1[i] = y;
+            return y;
+        }
+        void run(float& l, float& r) { l = step(0, l); r = step(1, r); }
+    } fLpf;
+    int fLowCut = 0;
+    struct LowCut { // bilinear one-pole high-pass
+        float g = 1, p = 0, x1[2] = {}, y1[2] = {};
+        void design(double fs, double fc) { const double k = std::tan(M_PI * fc / fs); g = (float)(1.0 / (1.0 + k)); p = (float)((k - 1.0) / (k + 1.0)); x1[0] = x1[1] = y1[0] = y1[1] = 0; }
+        float step(int i, float x) { const float y = g * (x - x1[i]) - p * y1[i]; x1[i] = x; y1[i] = y; return y; }
+        void run(float& l, float& r) { l = step(0, l); r = step(1, r); }
+    } fHpf;
     int fLastProg = -1;
     int fProgram = 0, fVol = 127, fExpr = 127, fPan = 64, fBend = 0, fBendRange = 12, fDefaultBend = 12;
     int fRpnMsb = 127, fRpnLsb = 127, fLfoVoice = -1;
