@@ -22,6 +22,7 @@ packages/core       変換コア (TypeScript, 依存なし)
   src/sequencer.ts    仮想 MXDRV シーケンサ (リピート・ループ・同期・テンポ・ポルタメント/LFO)
   src/convert.ts      シーケンサ出力 → SMF (format 1, 480 PPQN)
   src/opm.ts          .opm 音色バンク (VOPM / OPM68) ライタ
+  src/lzx.ts          LZX 圧縮 MDX (LZX 0.32 / 0.42) の展開
   src/flp.ts          FL Studio プロジェクト (.flp) の読み書き・テンプレートへの流し込み
   src/gm.ts           OPM 音色 → GM 音色の推定
   src/pdx.ts          PDX 解析・MSM6258 ADPCM / PCM8 16bit・8bit 復号
@@ -56,7 +57,7 @@ node corpus.mjs run list.txt out.jsonl 600     # 600 秒ごとに再開可能
 node corpus.mjs summary out.jsonl
 ```
 
-26,012 曲中 25,804 曲 (99.2%) が変換に成功しています (失敗は LZX 圧縮 203 曲・ヘッダ異常 5 曲)。
+26,012 曲中 26,007 曲 (99.98%) が変換に成功しています (失敗はヘッダ異常 5 曲)。LZX 圧縮された 203 曲は v0.6.1 から展開して変換します。
 
 ## 変換仕様
 
@@ -104,7 +105,6 @@ node corpus.mjs summary out.jsonl
 
 ## 既知の制限
 
-- LZX 圧縮 MDX は未対応
 - 0xE0–0xE6 は MXDRV 2.06 では未定義で、MXDRV と同じくそのチャンネルを終了します (別ドライバ向けの曲、例: あにまーじゃん V3 は MXDRV でも無音になります)
 - GM モードの FM 音色は近似
 - ブラウザ内試聴は未実装 (ymfm の WASM 化を予定)

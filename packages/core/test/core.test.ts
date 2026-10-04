@@ -54,9 +54,9 @@ describe('mdx', () => {
     expect(r.durationSec).toBeGreaterThan(0);
   });
 
-  it('rejects LZX packed MDX', () => {
+  it('reports a broken LZX body', () => {
     const d = mdx([0xf1, 0]);
-    const base = d.indexOf(0, 8) + 1;
+    const base = d.indexOf(0x1a) + 2; // title CR LF EOF, empty PDX name, its 0
     d.set([0x60, 0x26, 0x60, 0x32, 0x4c, 0x5a, 0x58, 0x20], base);
     expect(() => parseMdx(d)).toThrow(/LZX/);
   });
@@ -256,5 +256,42 @@ describe('FL Studio project (.flp)', async () => {
     const dec = new TextDecoder();
     expect(f.events.some((e) => e.id === FLP.PluginData && dec.decode(e.data).includes('bankdata\0//MiOPMdrv'))).toBe(true);
     expect(cleanTitle('\x1bE\x1b[1mKnight  Arms\r\n')).toBe('Knight Arms');
+  });
+});
+
+describe('LZX-packed MDX', async () => {
+  const { unlzx, isLzx } = await import('../src/lzx.js');
+  /** A tiny LZX body: header, the stub's `lea (d8,pc,a6.l),a6` pointing at 0x60, then the stream. */
+  const packed = (stream: number[], size: number) => {
+    const z = new Array(0x60).fill(0);
+    z.splice(0, 12, 0x60, 0x26, 0x60, 0x32, ...Array.from(new TextEncoder().encode('LZX 0.32')));
+    z[0x14] = size >> 8; z[0x15] = size & 255;
+    z.splice(0x52, 4, 0x4d, 0xfb, 0xe8, 0x60 - 0x54);
+    return Uint8Array.from([...z, ...stream]);
+  };
+  it('unpacks literals, short and long matches', () => {
+    // flags 1 1 0 0 10 | 0 1: 'A' 'B', copy 4 from -2, end (long match with length 0)
+    const z = packed([0xc9, 0x41, 0x42, 0xfe, 0xff, 0xf8, 0x00], 6);
+    expect(isLzx(z, 0)).toBe(true);
+    expect(new TextDecoder().decode(unlzx(z, 0))).toBe('ABABAB');
+  });
+  it('parses a packed MDX like the plain one', () => {
+    const plain = mdx([0xfd, 0x00, 0x80 + 30, 24, 0xf1, 0]);
+    let i = plain.indexOf(0x1a); const base = plain.indexOf(0, i + 1) + 1;
+    const body = Array.from(plain.subarray(base));
+    // all literals: one flag byte (0xff) per 8 bytes, then the end marker (flags 0 1, ff f8 00)
+    const stream: number[] = [];
+    for (let k = 0; k < body.length; k += 8) {
+      const chunk = body.slice(k, k + 8);
+      let flags = 0, bits = 0;
+      for (let b = 0; b < chunk.length; b++) { flags = (flags << 1) | 1; bits++; }
+      if (chunk.length < 8) { flags = (flags << 2) | 1; bits += 2; } // + end marker bits 0 1
+      stream.push((flags << (8 - bits)) & 0xff, ...chunk);
+      if (chunk.length === 8 && k + 8 >= body.length) stream.push(0x40); // end marker in a new flag byte
+    }
+    stream.push(0xff, 0xf8, 0x00);
+    const file = Uint8Array.from([...plain.subarray(0, base), ...packed(stream, body.length)]);
+    const a = convert(file, null, { fmMode: 'opm68' }), b = convert(plain, null, { fmMode: 'opm68' });
+    expect(Array.from(a.midi)).toEqual(Array.from(b.midi));
   });
 });

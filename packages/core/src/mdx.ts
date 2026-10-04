@@ -1,4 +1,5 @@
 // MDX (MXDRV) file parser: header, voice table, channel data offsets.
+import { isLzx, unlzx } from './lzx.js';
 
 export interface OpmOperator {
   dt1: number; mul: number; tl: number; ks: number; ar: number;
@@ -21,6 +22,7 @@ export interface MdxFile {
   voices: Map<number, OpmVoice>;
   channelOffsets: number[]; // absolute offsets, 9 or 16 channels
   pcm8: boolean;       // 16-channel (PCM8 extended) layout
+  lzx: boolean;        // the file was LZX-packed (data holds the unpacked MDX)
 }
 
 export class MdxParseError extends Error {}
@@ -51,8 +53,14 @@ export function parseMdx(data: Uint8Array): MdxFile {
   const base = i + 1;
   if (base + 20 > data.length) throw new MdxParseError('MDX body too short');
 
+  let lzx = false;
   if (isLzx(data, base)) {
-    throw new MdxParseError('LZX圧縮されたMDXです(未対応)。展開済みのMDXを使ってください');
+    // LZX-packed: unpack the body and continue with the plain MDX (header kept as it is)
+    let body: Uint8Array;
+    try { body = unlzx(data, base); } catch (e) { throw new MdxParseError(`LZX圧縮の展開に失敗しました: ${(e as Error).message}`); }
+    const plain = new Uint8Array(base + body.length);
+    plain.set(data.subarray(0, base)); plain.set(body, base);
+    data = plain; lzx = true;
   }
   const voiceOff = u16(data, base);
   const firstCh = u16(data, base + 2);
@@ -72,16 +80,9 @@ export function parseMdx(data: Uint8Array): MdxFile {
     if (!voices.has(v.number)) voices.set(v.number, v);
     vp += 27;
   }
-  return { title, pdxName, base, data, voices, channelOffsets, pcm8 };
+  return { title, pdxName, base, data, voices, channelOffsets, pcm8, lzx };
 }
 
-function isLzx(d: Uint8Array, base: number): boolean {
-  // LZX-packed MDX embeds a 68000 depacker ("bra" + "LZX x.xx" signature) right after the header.
-  for (let i = base; i < Math.min(d.length - 3, base + 16); i++) {
-    if (d[i] === 0x4c && d[i + 1] === 0x5a && d[i + 2] === 0x58 && d[i + 3] === 0x20) return true;
-  }
-  return false;
-}
 
 function parseVoice(d: Uint8Array, p: number): OpmVoice {
   const flcon = d[p + 1];

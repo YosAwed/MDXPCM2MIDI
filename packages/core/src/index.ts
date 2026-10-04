@@ -1,4 +1,5 @@
 export * from './mdx.js';
+export { unlzx, isLzx } from './lzx.js';
 export * from './sequencer.js';
 export * from './convert.js';
 export * from './pdx.js';
