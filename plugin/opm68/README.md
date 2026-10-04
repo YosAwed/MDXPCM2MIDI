@@ -15,11 +15,15 @@ MDXPCM2MIDI の出力を X68000 と同じ YM2151 で鳴らすためのプラグ�
 - **Low cut** (既定 OFF、ボタンで OFF → 70 Hz → 110 Hz): カップリングコンデンサによる低域の減衰を模した 1 次ハイパス。MXDRV (x68sound) には無い特性なので既定は OFF。70 Hz は状態のよい実機、110 Hz は容量が抜けた実機のつもりの目安
 - バンク (.opm) はプロジェクトに保存されます
 
-## 使い方 (FL Studio)
-1. `OPM68.vst3` を `C:\Program Files\Common Files\VST3\` に、`OPM68.clap` を `C:\Program Files\Common Files\CLAP\` にコピー
-2. MDXPCM2MIDI で「FM 音色: OPM68 プラグイン用」を選んで変換 (`.mid` / `.opm` / `.sf2`)
-3. `.mid` を読み込み、FM 8 チャンネルそれぞれの音源を OPM68 に差し替え、「Load .OPM...」で `.opm` を読み込む
-4. ADPCM (ch10) は `.sf2` を SoundFont プレーヤーで鳴らす
+## 導入
+- Windows: `OPM68.clap` を `C:\Program Files\Common Files\CLAP\`、`OPM68.vst3` (フォルダごと) を `C:\Program Files\Common Files\VST3\` にコピー (DAW を閉じてから上書き)
+- Linux: `OPM68.clap` を `~/.clap/`、`OPM68.vst3` を `~/.vst3/` に置く
+- 画面上部の版表記で、入っている版を確認できます。変換器と同じ版を使ってください
+
+## 使い方
+- **FL Studio**: 変換器の `.flp` 出力 (`--flp` / `--flp-arrange`、Web 版の「.flp」) を開くだけです。CLAP 版の OPM68 が 8 つ並び、音色バンクの埋め込みと Mono ON まで済んでいます
+- **その他の DAW**: OPM68 モードで変換した `.mid` を読み込み、FM A〜H (MIDI ch1〜8) のトラックそれぞれに OPM68 を立ち上げて、「Load .OPM...」で `.opm` を読み込み、Mono を ON にします。ADPCM は `.sf2` を SoundFont プレーヤーで鳴らします
+- 詳しくはリポジトリ直下の [README](../../README.md) を参照
 
 ## 制御ノート
 DAW (FL Studio など) はピッチベンドやオートメーションをバッファ単位で間引き、ピッチ幅の設定でも拡大縮小してしまうため、MXDRV の速いポルタメントや LFO が崩れます。
