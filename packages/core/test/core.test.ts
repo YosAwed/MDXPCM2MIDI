@@ -183,6 +183,18 @@ describe('OPM68 control notes', () => {
     expect(items).toContainEqual({ k: 'clock', v: 56 });
     expect(items.filter((x) => x.k === 'vol')).toEqual([{ k: 'vol', v: 0x0a }]); // v8 then v12 in the same clock: the last wins
   });
+  it('resets the fade (and later-changed state) at the song start so a DAW loop plays again', () => {
+    // @0, loop: [F3 +16, note] L — then a requested fade over the end
+    const src = mdx([0xfd, 0x00, 0xf3, 0x00, 0x10, 0xa0, 47, 0xf1, 0xff, 0xf8]);
+    const r = convert(src, null, { fmMode: 'opm68', loops: 2, fadeSeconds: 2 });
+    const ps = packets(r.midi);
+    expect(ps.flat().some((x) => x.k === 'fade' && x.v === 127)).toBe(true); // the fade ends silent
+    expect(ps[0]).toContainEqual({ k: 'fade', v: 0 });                       // and is cleared at tick 0
+    expect(ps[0].filter((x) => x.k === 'detune')).toEqual([{ k: 'detune', v: 16 }]); // set at tick 0: kept as is
+    // no fade, nothing added
+    const plain = packets(convert(src, null, { fmMode: 'opm68', loops: 2 }).midi);
+    expect(plain.flat().some((x) => x.k === 'fade')).toBe(false);
+  });
   it('keeps low notes as they are (control keys stay below MIDI 15)', () => {
     const r = convert(mdx([0xfd, 0x00, 0x80, 47, 0xf1, 0]), null, { fmMode: 'opm68' });
     const a = Array.from(r.midi);

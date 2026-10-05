@@ -469,6 +469,25 @@ export function convertMdx(input: Uint8Array | MdxFile, options: ConvertOptions 
     }
   }
 
+  // OPM68 keeps driver state between notes. When a DAW loops the song or plays it again from the top,
+  // the plugin still holds the state of the song's end (above all the fade: 127 = silent). So at tick 0,
+  // put back the initial value of every state the song changes later and does not set at tick 0.
+  // (A freshly reset plugin already has these values, so the first play is unchanged.)
+  if (nativeCtl) for (let ch = 0; ch < 8; ch++) {
+    const m = ctlItems[ch];
+    if (!m.size) continue;
+    const at0 = m.get(0) ?? [];
+    const later = new Set<CtlItem['k']>();
+    for (const [t, list] of m) if (t > 0) for (const it of list) later.add(it.k);
+    const neutral: CtlItem[] = [];
+    if (later.has('fade') && !at0.some((x) => x.k === 'fade')) neutral.push({ k: 'fade', v: 0 });
+    if (later.has('detune') && !at0.some((x) => x.k === 'detune')) neutral.push({ k: 'detune', v: 0 });
+    if (later.has('delay') && !at0.some((x) => x.k === 'delay')) neutral.push({ k: 'delay', v: 0 });
+    for (const k of ['plfo', 'alfo'] as const)
+      if (later.has(k) && !at0.some((x) => x.k === k)) neutral.push({ k, mode: 0, per: 0, amp: 0 });
+    if (neutral.length) m.set(0, [...neutral, ...at0]);
+  }
+
   // OPM68 control notes
   if (nativeCtl) for (let ch = 0; ch < 8; ch++) {
     if (!seq.usedChannels[ch]) continue;
