@@ -23,7 +23,7 @@ X68000 の MDX (MXDRV) ファイルを、今の DAW で鳴らせる形に変換�
 
 ## 導入
 
-### 1. OPM68 プラグインを入れる (Windows)
+### 1. OPM68 プラグインを入れる
 
 1. [リリース](https://github.com/YosAwed/MDXPCM2MIDI/releases) から最新の `OPM68-x.y.z-win64.zip` をダウンロードして展開します
 2. DAW を閉じてから、次の場所にコピー (上書き) します
@@ -33,6 +33,20 @@ X68000 の MDX (MXDRV) ファイルを、今の DAW で鳴らせる形に変換�
 4. OPM68 の画面上部の版表記 (例: `v0.6.4`) が、ダウンロードした版と同じことを確かめます
 
 Linux は `OPM68-x.y.z-linux-x86_64.zip` を展開し、`OPM68.clap` を `~/.clap/`、`OPM68.vst3` を `~/.vst3/` に置きます。
+
+macOS (Apple Silicon / Intel、macOS 11 以降) は `OPM68-x.y.z-macos-universal.zip` を展開し、次の場所に置きます。AU 版は Logic / GarageBand 用です。
+
+- `OPM68.clap` → `~/Library/Audio/Plug-Ins/CLAP/`
+- `OPM68.vst3` → `~/Library/Audio/Plug-Ins/VST3/`
+- `OPM68.component` → `~/Library/Audio/Plug-Ins/Components/`
+
+Apple の公証を受けていないため、ダウンロードした zip から入れたときは隔離属性を外してください (外さないと DAW が読み込みを拒否します)。
+
+```sh
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/CLAP/OPM68.clap ~/Library/Audio/Plug-Ins/VST3/OPM68.vst3 ~/Library/Audio/Plug-Ins/Components/OPM68.component
+```
+
+ソースからのビルド方法は [plugin/opm68/README.md](plugin/opm68/README.md#ビルド) を参照してください。
 
 > 変換器とプラグインは同じ版のものを使ってください。古いプラグインでは、新しい変換器の出力 (y コマンド、ハード LFO など) が正しく鳴りません。
 
@@ -128,7 +142,7 @@ VOPM / VOPMex で鳴らす場合は `--vopm` で変換し、8 インスタンス
 
 ## OPM68 プラグイン
 
-YM2151 を X68000 と同じ 4MHz で動かすプラグインです (VST3 / CLAP、Windows / Linux)。音源コアは ymfm です。
+YM2151 を X68000 と同じ 4MHz で動かすプラグインです (VST3 / CLAP、Windows / Linux / macOS。macOS は AU も)。音源コアは ymfm です。
 
 | 画面のボタン | 既定 | 内容 |
 |---|---|---|

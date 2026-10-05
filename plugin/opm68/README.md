@@ -18,6 +18,7 @@ MDXPCM2MIDI の出力を X68000 と同じ YM2151 で鳴らすためのプラグ�
 ## 導入
 - Windows: `OPM68.clap` を `C:\Program Files\Common Files\CLAP\`、`OPM68.vst3` (フォルダごと) を `C:\Program Files\Common Files\VST3\` にコピー (DAW を閉じてから上書き)
 - Linux: `OPM68.clap` を `~/.clap/`、`OPM68.vst3` を `~/.vst3/` に置く
+- macOS (Apple Silicon / Intel 共通、macOS 11 以降): `OPM68.clap` を `~/Library/Audio/Plug-Ins/CLAP/`、`OPM68.vst3` を `~/Library/Audio/Plug-Ins/VST3/`、`OPM68.component` (AU、Logic / GarageBand 用) を `~/Library/Audio/Plug-Ins/Components/` に置く。公証していないため、ダウンロードした zip から入れた場合は `xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/{CLAP/OPM68.clap,VST3/OPM68.vst3,Components/OPM68.component}` で隔離属性を外す
 - 画面上部の版表記で、入っている版を確認できます。変換器と同じ版を使ってください
 
 ## 使い方
@@ -50,6 +51,8 @@ MDX のコマンドと同じ位置に置いた短い「制御ノート」で送�
 git clone --recursive https://github.com/DISTRHO/DPF.git ../DPF
 git -C ../DPF apply "$PWD/dpf-velocity.patch"   # FL Studio のベロシティ (値/128) を正確に復元する
 make                                   # Linux
+make all au CFLAGS="-arch arm64 -arch x86_64" CXXFLAGS="-arch arm64 -arch x86_64" LDFLAGS="-arch arm64 -arch x86_64"   # macOS (universal、AU も)
+for b in bin/OPM68.{clap,vst3,component}; do codesign --force --deep -s - "$b"; done                                    # macOS (ad-hoc 署名)
 make WINDOWS=true CC=x86_64-w64-mingw32-gcc-posix CXX=x86_64-w64-mingw32-g++-posix \
      DPF_TARGET_DIR=bin-win DPF_BUILD_DIR=build-win   # Windows (mingw-w64)
 ```
