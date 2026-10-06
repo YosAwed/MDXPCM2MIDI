@@ -208,4 +208,6 @@ for b in bin/OPM68.{clap,vst3,component}; do codesign --force --deep -s - "$b"; 
 make WINDOWS=true CC=x86_64-w64-mingw32-gcc-posix CXX=x86_64-w64-mingw32-g++-posix \
      DPF_TARGET_DIR=bin-win DPF_BUILD_DIR=build-win   # Windows (mingw-w64)
 ```
+配布用の zip (Windows / macOS / Linux) は GitHub Actions ([`.github/workflows/opm68-release.yml`](../../.github/workflows/opm68-release.yml)) で作ります。リリースを公開すると 3 つとも自動でビルドされ、そのリリースに添付されます (Actions タブから手動実行も可)。
+
 `test/render.cpp` はエンジン単体のオフライン描画、`test/clap_smoke.cpp` は CLAP 版を読み込んで鳴らす簡易ホストです。

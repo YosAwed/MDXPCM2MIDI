@@ -1,0 +1,108 @@
+# Builds the OPM68 plugin zips for Windows, macOS and Linux.
+# - Release published: builds the release tag and attaches OPM68-<version>-<os>.zip to that release.
+# - Manual run (Actions tab): builds the chosen branch (zips as workflow artifacts);
+#   enter a tag to attach the zips to that release instead.
+name: OPM68 release build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attach the zips to (leave empty to only build)
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  # DPF revision the plugin is built with (dpf-velocity.patch is applied on top)
+  DPF_REF: 4238e1c7f0351bbe488d79f0899c540543ac7583
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  build:
+    name: ${{ matrix.suffix }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suffix: win64
+            runner: ubuntu-24.04
+          - suffix: linux-x86_64
+            runner: ubuntu-24.04
+          - suffix: macos-universal
+            runner: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG || github.ref }}
+
+      - name: Toolchain (Windows)
+        if: matrix.suffix == 'win64'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq g++-mingw-w64-x86-64-posix
+
+      - name: Toolchain (Linux)
+        if: matrix.suffix == 'linux-x86_64'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libx11-dev libxext-dev libxrandr-dev libxcursor-dev libgl-dev libdbus-1-dev pkg-config
+
+      - name: DPF
+        run: |
+          git clone https://github.com/DISTRHO/DPF.git plugin/DPF
+          git -C plugin/DPF checkout "$DPF_REF"
+          git -C plugin/DPF submodule update --init --recursive
+          git -C plugin/DPF apply "$GITHUB_WORKSPACE/plugin/opm68/dpf-velocity.patch"
+
+      - name: Build (Windows, mingw-w64)
+        if: matrix.suffix == 'win64'
+        working-directory: plugin/opm68
+        run: |
+          make -j"$(nproc)" WINDOWS=true CC=x86_64-w64-mingw32-gcc-posix CXX=x86_64-w64-mingw32-g++-posix
+          x86_64-w64-mingw32-objdump -p bin/OPM68.clap | grep "DLL Name"
+
+      - name: Build (Linux)
+        if: matrix.suffix == 'linux-x86_64'
+        working-directory: plugin/opm68
+        run: make -j"$(nproc)"
+
+      - name: Build (macOS universal, ad-hoc signed)
+        if: matrix.suffix == 'macos-universal'
+        working-directory: plugin/opm68
+        run: |
+          ARCH="-arch arm64 -arch x86_64"
+          make -j"$(sysctl -n hw.ncpu)" all au CFLAGS="$ARCH" CXXFLAGS="$ARCH" LDFLAGS="$ARCH"
+          for b in bin/OPM68.clap bin/OPM68.vst3 bin/OPM68.component; do codesign --force --deep -s - "$b"; done
+          for f in bin/OPM68.clap/Contents/MacOS/* bin/OPM68.vst3/Contents/MacOS/* bin/OPM68.component/Contents/MacOS/*; do
+            lipo -info "$f"; lipo "$f" -verify_arch arm64 x86_64
+          done
+          for b in bin/OPM68.clap bin/OPM68.vst3 bin/OPM68.component; do codesign --verify --deep "$b"; done
+
+      - name: Package
+        id: pkg
+        run: |
+          VER=$(sed -nE 's/.*d_version\(([0-9]+), ([0-9]+), ([0-9]+)\).*/\1.\2.\3/p' plugin/opm68/OPM68Plugin.cpp)
+          if [ -n "$TAG" ] && [ "v$VER" != "$TAG" ]; then echo "::error::plugin version $VER does not match tag $TAG"; exit 1; fi
+          grep -q "v$VER\"" plugin/opm68/OPM68UI.cpp || { echo "::error::UI label is not v$VER"; exit 1; }
+          ZIP="OPM68-$VER-${{ matrix.suffix }}.zip"
+          cp plugin/opm68/README.md plugin/opm68/bin/
+          ITEMS="OPM68.clap OPM68.vst3 README.md"
+          [ "${{ matrix.suffix }}" = macos-universal ] && ITEMS="OPM68.clap OPM68.vst3 OPM68.component README.md"
+          (cd plugin/opm68/bin && zip -r -y -q "$GITHUB_WORKSPACE/$ZIP" $ITEMS)
+          unzip -l "$ZIP"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.zip }}
+          path: ${{ steps.pkg.outputs.zip }}
+
+      - name: Attach to release
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "${{ steps.pkg.outputs.zip }}" --clobber --repo "$GITHUB_REPOSITORY"
