@@ -90,7 +90,7 @@ PDX は MDX に書かれた名前を元に、同じフォルダ・`../PDX`・親
 | ファイル | 内容 |
 |---|---|
 | `song.mid` | Standard MIDI File (format 1, 480 PPQN) |
-| `song.opm` | 音色バンク (OPM68 / VOPM)。(音色×音量) が 128 を超える曲は `song_chA.opm` 〜 のチャンネル別 |
+| `song.opm` | 音色バンク (OPM68 / VOPM)。収まらない曲は `song_chA.opm` 〜 のチャンネル別 (OPM68: 使う音色が 127 を超える曲、VOPM: (音色×音量) の組が 128 を超える曲) |
 | `song.sf2` | ADPCM のサンプルの SoundFont (PDX があるとき) |
 | `song.flp` | `--flp` のとき。FL Studio プロジェクト (1 パターン形式) |
 | `song_arrange.flp` + `song_samples\*.wav` | `--flp-arrange` のとき。FL Studio プロジェクト (アレンジ形式) |
