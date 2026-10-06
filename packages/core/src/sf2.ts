@@ -39,6 +39,8 @@ export interface Sf2Options {
   /** presets to create, all pointing at the same kit instrument */
   presets?: { name: string; bank: number; program: number }[];
   releaseSeconds?: number;
+  /** SF2 exclusiveClass (generator 57) for every zone: a new note stops the sounding one. 0 = none */
+  exclusiveClass?: number;
 }
 
 export function writeSf2(samples: Sf2Sample[], opts: Sf2Options = {}): Uint8Array {
@@ -78,6 +80,7 @@ export function writeSf2(samples: Sf2Sample[], opts: Sf2Options = {}): Uint8Arra
     igen.u16(43); igen.u8(s.key); igen.u8(s.key); g++;      // keyRange
     igen.u16(38); igen.s16(release); g++;                   // releaseVolEnv
     igen.u16(54); igen.u16(0); g++;                         // sampleModes: no loop
+    if (opts.exclusiveClass) { igen.u16(57); igen.u16(opts.exclusiveClass); g++; } // exclusiveClass
     igen.u16(58); igen.u16(s.key); g++;                     // overridingRootKey
     igen.u16(53); igen.u16(i); g++;                         // sampleID
   });

@@ -64,3 +64,34 @@ export function decodePdxSample(src: Uint8Array, freq: number): { pcm: Int16Arra
   }
   return { pcm: decodeAdpcm(src), rate: ADPCM_RATES[freq] ?? 15625 };
 }
+
+/** Output rate of {@link x68AdpcmOutput}: the X68000 ADPCM / PCM8 output chain runs at 62.5 kHz (x68sound). */
+export const X68_ADPCM_OUT_RATE = 62500;
+
+/**
+ * The X68000's analog ADPCM output as x68sound (portable_mdx) models it, so that a decoded sample sounds like
+ * MXDRV's: the MSM6258 output is held at 62.5 kHz (10-bit DAC for ADPCM), goes through two DC-blocking high-pass
+ * stages (~320 Hz and ~60 Hz) that restart at every key-on, and through the 2nd-order low-pass of the mixer
+ * (-4 dB at 4 kHz, -12 dB at 7 kHz). Without it the samples are bassier and brighter than on the real machine.
+ */
+export function x68AdpcmOutput(pcm: Int16Array, rate: number, adpcm = true): { pcm: Int16Array; rate: number } {
+  const R = X68_ADPCM_OUT_RATE;
+  const n = Math.ceil((pcm.length * R) / rate);
+  const tail = 128; // let the low-pass ring out
+  const out = new Int16Array(n + tail);
+  const a1 = 1 - 1 / 32 - 1 / 1024, a2 = 1 - 1 / 256 - 1 / 512 - 1 / 4096;
+  const b1 = 1537 / 1024, b2 = 617 / 1024, lpGain = 4 / (1 - b1 + b2);
+  let xp = 0, h1 = 0, h1p = 0, h2 = 0, l1 = 0, l2 = 0, u1 = 0, u2 = 0;
+  for (let i = 0; i < n + tail; i++) {
+    let x = 0;
+    if (i < n) {
+      const v = pcm[Math.min(pcm.length - 1, Math.floor((i * rate) / R))];
+      x = adpcm ? (v >> 6) << 6 : v; // 12-bit decoder value << 4 -> drop the 2 LSBs like the 10-bit DAC
+    }
+    if (i < n) { h1 = x - xp + a1 * h1; xp = x; h2 = h1 - h1p + a2 * h2; h1p = h1; } else h2 = 0; // ADPCM stops: no input
+    const y = (h2 + 2 * u1 + u2 + b1 * l1 - b2 * l2) / lpGain;
+    u2 = u1; u1 = h2; l2 = l1; l1 = y * lpGain;
+    out[i] = Math.max(-32768, Math.min(32767, Math.round(y)));
+  }
+  return { pcm: out, rate: R };
+}

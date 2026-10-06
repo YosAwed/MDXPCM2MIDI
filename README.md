@@ -82,6 +82,7 @@ PDX は MDX に書かれた名前を元に、同じフォルダ・`../PDX`・親
 | `--loops N` | ループを何回演奏するか (既定 2) |
 | `--fade 秒` | ループする曲の終わりにフェードアウトを付ける |
 | `-p file.pdx` / `--no-pdx` | PDX を指定 / 使わない (ADPCM は GM ドラムになる) |
+| `--no-adpcm-filter` | PDX のサンプルを X68000 の出力フィルタなしで書き出す (既定はフィルタあり、下記) |
 | `-o out.mid` | 出力先 (既定: MDX と同じ場所・同じ名前) |
 | `--json` | 曲の情報を JSON で表示するだけ (ファイルは書かない) |
 
@@ -173,7 +174,9 @@ MXDRV のドライバ処理 (ポルタメント、ディチューン、ソフト
 | L ループ, [ ]n | 指定回数展開。任意で終端フェード (OPM68: 制御ノート / 他: CC11) |
 | LZX 圧縮 MDX | 展開してから変換 (LZX 0.32 / 0.42) |
 
-主な変換オプション (`ConvertOptions`、`packages/core/src/convert.ts`): `loops` (既定 2) / `fadeSeconds` / `fmMode` (`'gm' | 'vopm' | 'opm68'`) / `pcmMode` (`'sf2' | 'gm'`) / `volumeMode` / `bendRange` / `leadInBeats` / `programMap` / `drumMap` など。
+ADPCM の音質: PDX のサンプルは、X68000 の ADPCM 出力回路 (x68sound / portable_mdx のモデル) と同じ処理をしてから SF2 / WAV にします。62.5 kHz でのホールド、10bit DAC、キーオンごとにリセットされる 2 段のハイパス (約 320 Hz / 60 Hz)、ミキサーの 2 次ローパス (4 kHz で -4 dB、7 kHz で -12 dB) です。フィルタなしの生のサンプルは実機より低音が多く高音が明るく聞こえます (bos15 の ADPCM で MXDRV との波形相関 0.52 → 0.94)。ADPCM が 1 チャンネルの曲 (PCM8 でない曲) では、SF2 に exclusiveClass を付けて次の音で前の音を止めます (実機と同じモノフォニック)。`ConvertOptions.adpcmFilter: false` / CLI `--no-adpcm-filter` で無効。
+
+主な変換オプション (`ConvertOptions`、`packages/core/src/convert.ts`): `loops` (既定 2) / `fadeSeconds` / `fmMode` (`'gm' | 'vopm' | 'opm68'`) / `pcmMode` (`'sf2' | 'gm'`) / `adpcmFilter` (既定 true) / `volumeMode` / `bendRange` / `leadInBeats` / `programMap` / `drumMap` など。
 
 VOPM モードの補足: 曲中で最初のハード LFO 設定 (EA) を各音色に書き込み、音量はキャリア TL に焼き込みます。OPM クロック 4MHz・内蔵ローパス無効 (NRPN)、MUL=0 の音色は MUL を倍にして 1 オクターブ下げる、冒頭に 1 小節の無音を入れる、といった VOPM 向けの対策をしています。FL Studio では VOPM の扱いに問題が多いため、OPM68 を推奨します。
 

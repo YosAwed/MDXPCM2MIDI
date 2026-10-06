@@ -13,7 +13,7 @@ export * from './flp-arrange.js';
 export { writeSmf, Track } from './smf.js';
 
 import { convertMdx, PDX_SF2_BANK_MELODIC, type ConvertOptions, type ConvertResult } from './convert.js';
-import { parsePdx, decodePdxSample } from './pdx.js';
+import { parsePdx, decodePdxSample, x68AdpcmOutput } from './pdx.js';
 import { writeSf2, type Sf2Sample } from './sf2.js';
 
 export interface FullResult extends ConvertResult {
@@ -35,13 +35,16 @@ export function convert(mdx: Uint8Array, pdx?: Uint8Array | null, options: Conve
       // Plain MXDRV ignores @n on the ADPCM channel; fall back to bank 0 when the bank doesn't exist.
       const raw = bank.samples[idx] ?? (k.bank > 0 ? bank.samples[k.sample] : null);
       if (!raw) { missing.push(idx); continue; }
-      const { pcm, rate } = decodePdxSample(raw, k.freq);
+      const dec = decodePdxSample(raw, k.freq);
+      const { pcm, rate } = opts.adpcmFilter === false ? dec : x68AdpcmOutput(dec.pcm, dec.rate, k.freq < 5);
       samples.push({ name: `${res.pdxName || 'pdx'}_${idx}_f${k.freq}`.slice(0, 20), pcm, rate, key: k.midiKey });
     }
     if (missing.length) res.warnings.push(`PDXに存在しないサンプル: ${[...new Set(missing)].join(', ')}`);
     const name = (res.pdxName || 'PDX').slice(0, 16);
     sf2 = writeSf2(samples, {
       name,
+      // one ADPCM channel (no PCM8): a new sample cuts the previous one, as on the X68000
+      exclusiveClass: res.pcm8 ? 0 : 1,
       presets: [
         { name: `${name} Kit`, bank: 128, program: 0 },
         { name: `${name} Melodic`, bank: PDX_SF2_BANK_MELODIC, program: 0 },

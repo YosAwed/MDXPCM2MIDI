@@ -13,7 +13,7 @@
 // sample channels copy a Sampler channel of the template if it has one, else a built-in Sampler channel
 // saved by FL Studio; the first one takes the place of the sforzando "ADPCM" channel (same mixer insert).
 
-import { parsePdx, decodePdxSample } from './pdx.js';
+import { parsePdx, decodePdxSample, x68AdpcmOutput } from './pdx.js';
 import {
   FLP, parseFlp, writeFlp, evText, readText, evDword, encodeNotes, readSmf, cleanTitle,
   wrapperRecords, setWrapperRecord, setDpfState, OPM68_ID,
@@ -407,12 +407,13 @@ export function buildFlpArrange(input: ArrangeInput): ArrangeResult {
 }
 
 /** Decoded PDX samples for the converter's ADPCM keys (ConvertResult.pcmKeys). */
-export function arrangeSamplesFromPdx(keys: { midiKey: number; bank: number; sample: number; freq: number }[], pdx: Uint8Array | null): ArrangeSample[] {
+export function arrangeSamplesFromPdx(keys: { midiKey: number; bank: number; sample: number; freq: number }[], pdx: Uint8Array | null, x68Filter = true): ArrangeSample[] {
   const bank = pdx ? parsePdx(pdx) : null;
   return keys.map((k) => {
     const raw = bank ? bank.samples[k.bank * 96 + k.sample] ?? (k.bank > 0 ? bank.samples[k.sample] : null) : null;
     if (!raw) return { ...k, pcm: null, rate: 15625 };
-    const { pcm, rate } = decodePdxSample(raw, k.freq);
+    const dec = decodePdxSample(raw, k.freq);
+    const { pcm, rate } = x68Filter ? x68AdpcmOutput(dec.pcm, dec.rate, k.freq < 5) : dec;
     return { ...k, pcm, rate };
   });
 }

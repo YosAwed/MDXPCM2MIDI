@@ -77,6 +77,24 @@ describe('pdx / sf2', () => {
     expect(new TextDecoder().decode(sf.subarray(8, 12))).toBe('sfbk');
     expect(new DataView(sf.buffer).getUint32(4, true)).toBe(sf.length - 8);
   });
+  it('shapes samples like the X68000 ADPCM output (62.5 kHz, DC blocked, low-passed)', async () => {
+    const { x68AdpcmOutput } = await import('../src/pdx.js');
+    // 0.1 s of DC plus a tone at the 7.8 kHz Nyquist of 15.6 kHz ADPCM
+    const n = 1563, src = new Int16Array(n).map((_, i) => 8000 + (i & 1 ? 4000 : -4000));
+    const { pcm, rate } = x68AdpcmOutput(src, 15625);
+    expect(rate).toBe(62500);
+    expect(pcm.length).toBeGreaterThanOrEqual(n * 4);
+    const tail = pcm.subarray(4 * n - 2000, 4 * n - 100);
+    const mean = tail.reduce((a, b) => a + b, 0) / tail.length;
+    expect(Math.abs(mean)).toBeLessThan(200);                        // DC removed by the high-pass stages
+    expect(Math.max(...tail.map(Math.abs))).toBeLessThan(4000 * 0.4); // 7.8 kHz attenuated by the low-pass
+  });
+  it('makes the ADPCM kit monophonic with an exclusive class', () => {
+    const find57 = (sf: Uint8Array) => { for (let i = 0; i + 4 <= sf.length; i++) if (sf[i] === 57 && sf[i + 1] === 0 && sf[i + 2] === 1 && sf[i + 3] === 0) return true; return false; };
+    const s = [{ name: 's', pcm: new Int16Array(10), rate: 15625, key: 36 }];
+    expect(find57(writeSf2(s, { exclusiveClass: 1 }))).toBe(true);
+    expect(find57(writeSf2(s))).toBe(false);
+  });
 });
 
 describe('opm bank', () => {

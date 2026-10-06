@@ -4,10 +4,10 @@ import { convert, formatReport, buildFlp, buildFlpArrange, arrangeSamplesFromPdx
 
 const args = process.argv.slice(2);
 if (!args.length || args.includes('-h')) {
-  console.log('usage: mdx2mid <file.mdx> [-p file.pdx] [-o out.mid] [--loops N] [--fade SEC] [--gm] [--vopm|--opm68] [--flp template.flp] [--flp-arrange template.flp [--sample-root DIR]] [--json]');
+  console.log('usage: mdx2mid <file.mdx> [-p file.pdx] [-o out.mid] [--loops N] [--fade SEC] [--gm] [--vopm|--opm68] [--flp template.flp] [--flp-arrange template.flp [--sample-root DIR]] [--no-adpcm-filter] [--json]');
   process.exit(0);
 }
-let arrangeTemplate = '', sampleRoot = '';
+let arrangeTemplate = '', sampleRoot = '', adpcmFilter = true;
 let input = '', pdxPath = '', out = '', loops = 2, fade = 0, gm = false, json = false, noPdx = false, vopm = false, opm68 = false, flpTemplate = '';
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
@@ -22,6 +22,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === '--flp-arrange') { arrangeTemplate = args[++i]; opm68 = true; vopm = true; }
   else if (a === '--sample-root') sampleRoot = args[++i];
   else if (a === '--no-pdx') noPdx = true;
+  else if (a === '--no-adpcm-filter') adpcmFilter = false;
   else if (a === '--json') json = true;
   else input = a;
 }
@@ -43,7 +44,7 @@ try {
   const head = convert(mdxBuf, null, { loops, fadeSeconds: fade, pcmMode: 'gm' });
   if (!pdxPath && !noPdx && !gm) pdxPath = findPdx(head.pdxName);
   const pdxBuf = pdxPath ? new Uint8Array(readFileSync(pdxPath)) : null;
-  res = convert(mdxBuf, pdxBuf, { loops, fadeSeconds: fade, pcmMode: gm || !pdxBuf ? 'gm' : 'sf2', fmMode: opm68 ? 'opm68' : vopm ? 'vopm' : 'gm' });
+  res = convert(mdxBuf, pdxBuf, { loops, fadeSeconds: fade, pcmMode: gm || !pdxBuf ? 'gm' : 'sf2', fmMode: opm68 ? 'opm68' : vopm ? 'vopm' : 'gm', adpcmFilter });
 } catch (e) {
   if (json) console.log(JSON.stringify({ file: input, ok: false, error: String((e as Error).message) }));
   else console.error(`${input}: ${(e as Error).message}`);
@@ -76,7 +77,7 @@ if (!json) {
     const sep = sampleRoot.includes('\\') ? '\\' : '/';
     const f = buildFlpArrange({
       template: new Uint8Array(readFileSync(arrangeTemplate)), midi: res.midi, banks, title: res.title || basename(input), name,
-      samples: arrangeSamplesFromPdx(res.pcmKeys, pdxPath ? new Uint8Array(readFileSync(pdxPath)) : null),
+      samples: arrangeSamplesFromPdx(res.pcmKeys, pdxPath ? new Uint8Array(readFileSync(pdxPath)) : null, adpcmFilter),
       samplePath: (file) => (sampleRoot === '.' ? `${basename(sdir)}\\${file}` : sampleRoot ? `${sampleRoot.replace(/[\\/]$/, '')}${sep}${basename(sdir)}${sep}${file}` : resolve(sdir, file)),
     });
     writeFileSync(`${stem}_arrange.flp`, f.flp);

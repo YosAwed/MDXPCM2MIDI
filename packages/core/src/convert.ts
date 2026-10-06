@@ -42,6 +42,8 @@ export interface ConvertOptions {
   /** opm68: send portamento / detune / pitch LFO as OPM68 control notes (keys 0-13) instead of pitch bend (default true). */
   opm68PortaNotes?: boolean;
   pcmMode?: PcmMode;            // 'sf2': keys map to generated SoundFont; 'gm': GM drum map (default 'gm')
+  /** Shape the PDX samples like the X68000's ADPCM output (x68sound filters, 62.5 kHz). Default true. */
+  adpcmFilter?: boolean;
   bendRange?: number;           // semitones (default 12)
   ticksPerClock?: number;       // MIDI ticks per MDX clock (default 10 -> 480 PPQN)
   programMap?: Record<number, number>; // OPM voice number -> GM program (0-127)
