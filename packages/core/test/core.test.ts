@@ -4,7 +4,7 @@ import { packControl, decodePacket, type CtlItem } from '../src/opm68ctl.js';
 import { newPitchLfo, newAmpLfo, setPitchLfo, setAmpLfo, stepPitchLfo, stepAmpLfo, amLfoAtt, MxRandom } from '../src/sequencer.js';
 
 /** Build a minimal 9-channel MDX. Channel A gets `chA`, others just end. */
-function mdx(chA: number[], title = 'TEST', pdx = ''): Uint8Array {
+function mdx(chA: number[], title = 'TEST', pdx = '', others: Record<number, number[]> = {}): Uint8Array {
   const head = [...new TextEncoder().encode(title), 0x0d, 0x0a, 0x1a, ...new TextEncoder().encode(pdx), 0];
   const voice = [0, 0x3a, 0x0f, ...new Array(24).fill(0)];
   const end = [0xf1, 0x00];
@@ -12,7 +12,7 @@ function mdx(chA: number[], title = 'TEST', pdx = ''): Uint8Array {
   const hdr = 2 + 9 * 2;
   let off = hdr;
   const offs: number[] = [];
-  const chans = [chA, ...new Array(8).fill(end)];
+  const chans = [chA, ...new Array(8).fill(end)].map((c, i) => others[i] ?? c);
   for (const c of chans) { offs.push(off); off += c.length; }
   const voiceOff = off;
   body.push(voiceOff >> 8, voiceOff & 255);
@@ -88,6 +88,12 @@ describe('pdx / sf2', () => {
     const mean = tail.reduce((a, b) => a + b, 0) / tail.length;
     expect(Math.abs(mean)).toBeLessThan(200);                        // DC removed by the high-pass stages
     expect(Math.max(...tail.map(Math.abs))).toBeLessThan(4000 * 0.4); // 7.8 kHz attenuated by the low-pass
+  });
+  it('does not restart an ADPCM sample after a tie (&), like MXDRV', () => {
+    // P: n24, F7 n24 (no key-off: tied to the next note), n24 (no key-on), F7 n30 -> key-ons at 0, 12, 36
+    const src = mdx([0xf1, 0x00], 'TEST', '', { 8: [0x80 + 24, 11, 0xf7, 0x80 + 24, 11, 0x80 + 24, 11, 0xf7, 0x80 + 30, 11, 0xf1, 0x00] });
+    const seq = sequence(parseMdx(src));
+    expect(seq.events.filter((e) => e.ch === 8 && e.type === 'noteOn').map((e) => e.t)).toEqual([0, 12, 36]);
   });
   it('makes the ADPCM kit monophonic with an exclusive class', () => {
     const find57 = (sf: Uint8Array) => { for (let i = 0; i + 4 <= sf.length; i++) if (sf[i] === 57 && sf[i + 1] === 0 && sf[i + 2] === 1 && sf[i + 3] === 0) return true; return false; };

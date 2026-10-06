@@ -239,6 +239,9 @@ export function sequence(mdx: MdxFile, opts: SeqOptions = {}): SeqResult {
     if (c.tiePrev && !c.pcm && c.curKey === key) {
       // tie: keep the note sounding; LFOs keep running
       if (portaEv && (c.porta !== 0 || hadPorta)) pushPorta(c);
+    } else if (c.tiePrev && c.pcm && c.curKey !== null) {
+      // tie (&) on ADPCM: MXDRV's key-on (L000e7e) returns at once while the channel is still keyed on,
+      // whatever the note: the sample keeps playing and is not restarted
     } else if (c.tiePrev && !c.pcm && c.curKey !== null) {
       // tie (&) into a different note: MXDRV changes the pitch without a key-on (slur); LFOs keep running
       events.push({ t, ch: c.idx, type: 'noteOn', note, key, legato: true });
