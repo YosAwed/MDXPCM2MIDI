@@ -164,6 +164,7 @@ private:
             return;
         }
         const int n = (fCtl[0] & 15) + 1;
+        if (n > kCtlKeys) { for (int& x : fCtl) x = -1; fCtlAny = false; return; } // invalid header: longer than the keys can carry
         for (int k = 1; k < n; k++)
             if (fCtl[k] < 0) { // wait briefly for the rest of the packet, then drop it
                 if (fNow - fCtlAt[0] > 256) { for (int& x : fCtl) x = -1; fCtlAny = false; }

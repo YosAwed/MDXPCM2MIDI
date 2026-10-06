@@ -7,7 +7,7 @@ X68000 の MDX (MXDRV) ファイルを、今の DAW で鳴らせる形に変換�
 - PDX を一緒に読み込むと、ADPCM パートを原音のサンプルで鳴らします (WAV + FL 標準 Sampler、または SoundFont)
 - 変換はすべて手元 (ブラウザ内の Web Worker、または Node の CLI) で行います。ファイルをサーバへ送ることはありません
 
-現在のバージョン: **v0.6.4** (OPM68 0.6.4) — [リリース一覧](https://github.com/YosAwed/MDXPCM2MIDI/releases)
+現在のバージョン: **v0.6.5** (OPM68 0.6.5) — [リリース一覧](https://github.com/YosAwed/MDXPCM2MIDI/releases)
 
 ## 目次
 
@@ -30,7 +30,7 @@ X68000 の MDX (MXDRV) ファイルを、今の DAW で鳴らせる形に変換�
    - `OPM68.clap` → `C:\Program Files\Common Files\CLAP\`
    - `OPM68.vst3` (フォルダごと) → `C:\Program Files\Common Files\VST3\`
 3. DAW を起動し、プラグインの再スキャンをします (FL Studio: Options → Manage plugins → Find installed plugins)
-4. OPM68 の画面上部の版表記 (例: `v0.6.4`) が、ダウンロードした版と同じことを確かめます
+4. OPM68 の画面上部の版表記 (例: `v0.6.5`) が、ダウンロードした版と同じことを確かめます
 
 Linux は `OPM68-x.y.z-linux-x86_64.zip` を展開し、`OPM68.clap` を `~/.clap/`、`OPM68.vst3` を `~/.vst3/` に置きます。
 
