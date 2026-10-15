@@ -100,10 +100,21 @@ protected:
         // The fade-out is driver state that outlives the song end: when the host starts playing or jumps back
         // (FL Studio's song loop, a restart from the top), clear it. The converter also sends FADE 0 at tick 0,
         // but a host may skip notes that sit exactly on the loop start, and older .flp files lack that packet.
+        // FL Studio reports frame 0 all the time, so the song position comes from bar/beat/tick when given.
         const TimePosition& tp = getTimePosition();
         if (tp.playing) {
-            if (!fWasPlaying || tp.frame + 64 < fExpectFrame) fEngine.transportRestart();
-            fExpectFrame = tp.frame + frames;
+            bool back = false;
+            if (tp.bbt.valid && tp.bbt.ticksPerBeat > 0 && tp.bbt.beatsPerBar > 0) {
+                const double beat = (tp.bbt.bar - 1) * (double)tp.bbt.beatsPerBar + (tp.bbt.beat - 1) + tp.bbt.tick / tp.bbt.ticksPerBeat;
+                back = fWasPlaying && beat < fLastBeat - 1e-3;
+                fLastBeat = beat;
+            }
+            if (tp.frame != 0) fFrameSeen = true;
+            if (fFrameSeen && !tp.bbt.valid) {
+                back = back || (fWasPlaying && tp.frame + 64 < fExpectFrame);
+                fExpectFrame = tp.frame + frames;
+            }
+            if (!fWasPlaying || back) fEngine.transportRestart();
         }
         fWasPlaying = tp.playing;
         uint32_t e = 0;
@@ -123,6 +134,8 @@ protected:
 private:
     bool fWasPlaying = false;
     uint64_t fExpectFrame = 0;
+    double fLastBeat = 0;
+    bool fFrameSeen = false;
 
     void handle(const MidiEvent& m)
     {
