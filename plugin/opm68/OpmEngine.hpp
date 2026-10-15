@@ -102,6 +102,9 @@ public:
         }
     }
 
+    /** Host transport started or jumped back: drop the fade-out left over from the song end. */
+    void transportRestart() { if (fFadeAtt) { fFadeAtt = 0; refreshLevels(); } }
+
     void allNotesOff() { for (int c = 0; c < 8; c++) { fCh[c].held = false; fCh[c].pendingKeyOn = false; write(0x08, c); } }
 
     void controlChange(int cc, int val)

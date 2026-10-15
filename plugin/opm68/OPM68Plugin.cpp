@@ -16,7 +16,7 @@ protected:
     const char* getMaker() const override { return "MDXPCM2MIDI"; }
     const char* getHomePage() const override { return "https://github.com/YosAwed/MDXPCM2MIDI"; }
     const char* getLicense() const override { return "Apache-2.0"; }
-    uint32_t getVersion() const override { return d_version(0, 6, 6); }
+    uint32_t getVersion() const override { return d_version(0, 6, 7); }
 
     void initParameter(uint32_t index, Parameter& p) override
     {
@@ -97,6 +97,15 @@ protected:
         float* L = outputs[0]; float* R = outputs[1];
         std::unique_lock<std::mutex> g(fLock, std::try_to_lock);
         if (!g.owns_lock()) { std::memset(L, 0, frames * 4); std::memset(R, 0, frames * 4); return; }
+        // The fade-out is driver state that outlives the song end: when the host starts playing or jumps back
+        // (FL Studio's song loop, a restart from the top), clear it. The converter also sends FADE 0 at tick 0,
+        // but a host may skip notes that sit exactly on the loop start, and older .flp files lack that packet.
+        const TimePosition& tp = getTimePosition();
+        if (tp.playing) {
+            if (!fWasPlaying || tp.frame + 64 < fExpectFrame) fEngine.transportRestart();
+            fExpectFrame = tp.frame + frames;
+        }
+        fWasPlaying = tp.playing;
         uint32_t e = 0;
         for (uint32_t i = 0; i < frames; i++) {
             while (e < evCount && ev[e].frame <= i) { handle(ev[e]); e++; }
@@ -112,6 +121,9 @@ protected:
     }
 
 private:
+    bool fWasPlaying = false;
+    uint64_t fExpectFrame = 0;
+
     void handle(const MidiEvent& m)
     {
         const uint8_t* d = m.size > MidiEvent::kDataSize ? m.dataExt : m.data;
