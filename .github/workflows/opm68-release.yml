@@ -88,9 +88,12 @@ jobs:
           if [ -n "$TAG" ] && [ "v$VER" != "$TAG" ]; then echo "::error::plugin version $VER does not match tag $TAG"; exit 1; fi
           grep -q "v$VER\"" plugin/opm68/OPM68UI.cpp || { echo "::error::UI label is not v$VER"; exit 1; }
           ZIP="OPM68-$VER-${{ matrix.suffix }}.zip"
-          cp plugin/opm68/README.md plugin/opm68/bin/
-          ITEMS="OPM68.clap OPM68.vst3 README.md"
-          [ "${{ matrix.suffix }}" = macos-universal ] && ITEMS="OPM68.clap OPM68.vst3 OPM68.component README.md"
+          cp plugin/opm68/README.md LICENSE NOTICE plugin/opm68/bin/
+          cp plugin/opm68/ymfm/LICENSE plugin/opm68/bin/LICENSE-ymfm.txt
+          cp plugin/DPF/LICENSE plugin/opm68/bin/LICENSE-DPF.txt
+          DOCS="README.md LICENSE NOTICE LICENSE-ymfm.txt LICENSE-DPF.txt"
+          ITEMS="OPM68.clap OPM68.vst3 $DOCS"
+          [ "${{ matrix.suffix }}" = macos-universal ] && ITEMS="OPM68.clap OPM68.vst3 OPM68.component $DOCS"
           (cd plugin/opm68/bin && zip -r -y -q "$GITHUB_WORKSPACE/$ZIP" $ITEMS)
           unzip -l "$ZIP"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"

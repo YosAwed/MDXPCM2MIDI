@@ -1,13 +1,13 @@
 #include "DistrhoUI.hpp"
 #include "DistrhoPluginInfo.h"
-#include "NanoButton.hpp"
+#include "OPM68Button.hpp"
 #include "OpmBank.hpp"
 #include <fstream>
 #include <sstream>
 
 START_NAMESPACE_DISTRHO
 
-using DGL_NAMESPACE::Button;
+using DGL_NAMESPACE::OPM68Button;
 using DGL_NAMESPACE::ButtonEventHandler;
 using DGL_NAMESPACE::SubWidget;
 
@@ -113,7 +113,7 @@ protected:
     }
 
 private:
-    static void setup(Button& b, int x, int y, int w, const char* label)
+    static void setup(OPM68Button& b, int x, int y, int w, const char* label)
     {
         b.setAbsolutePos(x, y); b.setSize(w, 30); b.setLabel(label);
         b.setBackgroundColor(Color(48, 51, 59)); b.setLabelColor(Color(236, 235, 231));
@@ -140,7 +140,7 @@ private:
         return k == std::string::npos ? s : s.substr(k + 1);
     }
 
-    Button fLoad, fVel, fMono, fClock, fLpf, fLowCut;
+    OPM68Button fLoad, fVel, fMono, fClock, fLpf, fLowCut;
     float fParams[kParamCount];
     String fFile;
     OpmBank fBank;
