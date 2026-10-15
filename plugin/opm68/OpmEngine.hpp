@@ -54,9 +54,10 @@ public:
     {
         if (vel == 0) { noteOff(note); return; }
         if (note < kCtlKeys) { controlNote(note, vel); return; }
+        dbgNotes++;
         int prog = fVelProg ? std::clamp(vel - 1, 0, 126) : fProgram;
         const OpmVoice& v = fBank.voice[prog];
-        if (!v.valid) return;
+        if (!v.valid) { dbgDrops += 1000; return; }
         fLastProg = prog;
         catchUpTicks();                 // MXDRV runs this clock's LFO step before the note command
         fPorta = 0; fPortaAcc = 0;      // cleared by every note command; a portamento item sent with it sets it again
@@ -103,7 +104,14 @@ public:
     }
 
     /** Host transport started or jumped back: drop the fade-out left over from the song end. */
-    void transportRestart() { if (fFadeAtt) { fFadeAtt = 0; refreshLevels(); } }
+    void transportRestart() { dbgRestarts++; if (fFadeAtt) { fFadeAtt = 0; refreshLevels(); } }
+    // ---- debug counters (test build) ----
+    int dbgNotes = 0, dbgPackets = 0, dbgDrops = 0, dbgRestarts = 0, dbgLastFade = -1, dbgLegato = 0;
+    int dbgFade() const { return fFadeAtt; }
+    int dbgVol() const { return fVolAtt; }
+    int dbgAtt() const { return fLastOn >= 0 ? fCh[fLastOn].att : -1; }
+    int dbgHeld() const { int n = 0; for (auto& c : fCh) n += c.held; return n; }
+    int dbgLegatoNext() const { return fLegatoNext; }
 
     void allNotesOff() { for (int c = 0; c < 8; c++) { fCh[c].held = false; fCh[c].pendingKeyOn = false; write(0x08, c); } }
 
@@ -163,14 +171,14 @@ private:
     {
         if (!fCtlAny) return;
         if (fCtl[0] < 0) { // header missing: drop stale bytes
-            for (int k = 1; k < kCtlKeys; k++) if (fCtl[k] >= 0 && fNow - fCtlAt[k] > 256) fCtl[k] = -1;
+            for (int k = 1; k < kCtlKeys; k++) if (fCtl[k] >= 0 && fNow - fCtlAt[k] > 256) { fCtl[k] = -1; dbgDrops++; }
             return;
         }
         const int n = (fCtl[0] & 15) + 1;
         if (n > kCtlKeys) { for (int& x : fCtl) x = -1; fCtlAny = false; return; } // invalid header: longer than the keys can carry
         for (int k = 1; k < n; k++)
             if (fCtl[k] < 0) { // wait briefly for the rest of the packet, then drop it
-                if (fNow - fCtlAt[0] > 256) { for (int& x : fCtl) x = -1; fCtlAny = false; }
+                if (fNow - fCtlAt[0] > 256) { for (int& x : fCtl) x = -1; fCtlAny = false; dbgDrops++; }
                 return;
             }
         uint8_t pk[kCtlKeys];
@@ -178,6 +186,7 @@ private:
         for (int& x : fCtl) x = -1;
         fCtlAny = false;
         catchUpTicks();
+        dbgPackets++;
         applyPacket(pk, n);
         anchorTicks();
         updateCurrent();
@@ -203,7 +212,7 @@ private:
                 break;
             }
             case 4:
-                if (param == 1) fLegatoNext = true;
+                if (param == 1) { fLegatoNext = true; dbgLegato++; }
                 else if (param == 2) { // @ during a note: MXDRV reloads the voice of the sounding note at once
                     int slot = rd();
                     // MXDRV's @: on a keyed-on note the whole voice is written at once; otherwise only the voice
@@ -222,7 +231,7 @@ private:
                 break;
             case 5: { int v = rd(); if (v > 0) fClockSec = v * 256e-6; break; }
             case 6: fVolAtt = std::min(127, rd()); clearTlOverrides(); fLevelDirty = true; if (fLastOn >= 0) fCh[fLastOn].levelKey = -1; break;
-            case 7: { int v = std::min(127, rd()); if (v != fFadeAtt) { fFadeAtt = v; refreshLevels(); } break; } // fade-out
+            case 7: { int v = std::min(127, rd()); dbgLastFade = v; if (v != fFadeAtt) { fFadeAtt = v; refreshLevels(); } break; } // fade-out
             default: p = n; break;
             }
         }

@@ -3,6 +3,9 @@
 #include <mutex>
 #include <fstream>
 #include <sstream>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 
 START_NAMESPACE_DISTRHO
 
@@ -101,10 +104,12 @@ protected:
         // (FL Studio's song loop, a restart from the top), clear it. The converter also sends FADE 0 at tick 0,
         // but a host may skip notes that sit exactly on the loop start, and older .flp files lack that packet.
         const TimePosition& tp = getTimePosition();
+        bool jumped = false;
         if (tp.playing) {
-            if (!fWasPlaying || tp.frame + 64 < fExpectFrame) fEngine.transportRestart();
+            if (!fWasPlaying || tp.frame + 64 < fExpectFrame) { jumped = true; fEngine.transportRestart(); }
             fExpectFrame = tp.frame + frames;
         }
+        if (tp.playing != fWasPlaying || jumped) dbgLog(tp, jumped ? "JUMP/START" : "STOP");
         fWasPlaying = tp.playing;
         uint32_t e = 0;
         for (uint32_t i = 0; i < frames; i++) {
@@ -118,10 +123,31 @@ protected:
         }
         while (e < evCount) handle(ev[e++]);
         fLastVoice = fEngine.lastProgram();
+        for (uint32_t i = 0; i < frames; i++) { float a = std::fabs(L[i]) + std::fabs(R[i]); if (a > fDbgPeak) fDbgPeak = a; }
+        fDbgFrames += frames; fDbgBlocks++;
+        if (fDbgFrames >= (uint64_t)(getSampleRate() > 0 ? getSampleRate() : 48000)) { dbgLog(tp, "tick"); fDbgFrames = 0; fDbgPeak = 0; }
     }
 
 private:
     bool fWasPlaying = false;
+    // ---- debug log (test build): %TEMP%\OPM68dbg_<n>.txt, one file per plugin instance ----
+    FILE* fDbg = nullptr; int fDbgId = -1; float fDbgPeak = 0; uint64_t fDbgFrames = 0, fDbgBlocks = 0;
+    void dbgLog(const TimePosition& tp, const char* what)
+    {
+        if (!fDbg) {
+            static std::atomic<int> n{0};
+            fDbgId = n++;
+            const char* tmp = std::getenv("TEMP");
+            char path[1024]; std::snprintf(path, sizeof path, "%s/OPM68dbg_%d.txt", tmp ? tmp : ".", fDbgId);
+            fDbg = std::fopen(path, "w");
+            if (!fDbg) return;
+        }
+        std::fprintf(fDbg, "%-10s play=%d frame=%llu valid=%d bbt=%d bar=%d beat=%d tick=%.1f | notes=%d pk=%d drop=%d restart=%d legato=%d lnext=%d held=%d fade=%d lastFadePk=%d vol=%d att=%d peak=%.4f gain=%.3f blocks=%llu\n",
+            what, (int)tp.playing, (unsigned long long)tp.frame, (int)tp.bbt.valid && 1, (int)tp.bbt.valid, tp.bbt.bar, tp.bbt.beat, tp.bbt.tick,
+            fEngine.dbgNotes, fEngine.dbgPackets, fEngine.dbgDrops, fEngine.dbgRestarts, fEngine.dbgLegato, fEngine.dbgLegatoNext(), fEngine.dbgHeld(),
+            fEngine.dbgFade(), fEngine.dbgLastFade, fEngine.dbgVol(), fEngine.dbgAtt(), fDbgPeak, fGain, (unsigned long long)fDbgBlocks);
+        std::fflush(fDbg);
+    }
     uint64_t fExpectFrame = 0;
 
     void handle(const MidiEvent& m)
