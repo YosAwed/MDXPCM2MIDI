@@ -1,0 +1,62 @@
+MDXPCM2MIDI
+Copyright (C) 2026 YosAwed.
+https://github.com/YosAwed/MDXPCM2MIDI
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This software contains parts derived from MXDRV and X68Sound as distributed in
+portable_mdx (https://github.com/yosshin4004/portable_mdx), and uses ymfm and DPF.
+
+  X68k MXDRV music driver version 2.06+17 Rel.X5-S
+      (c)1988-92 milk., K.MAEKAWA, Missy.M, Yatsube
+
+  Converted for Win32 [MXDRVg] V2.00a
+      Copyright (C) 2000-2002 GORRY.
+
+  X68Sound_src020615
+      Copyright (C) m_puusan.
+
+  Ported for 64bit environments
+      Copyright (C) 2018 Yosshin.
+
+--------------------------------------------------------------------------------
+1. portable_mdx に由来する部分 / Parts derived from portable_mdx
+   Apache License Version 2.0 (see LICENSE)
+
+   - packages/core/src/sequencer.ts, plugin/opm68/MxLfo.hpp, plugin/opm68/OpmEngine.hpp,
+     packages/core/src/convert.ts: MXDRV behaviour (volume table, software LFOs, LFO random
+     generator, portamento/detune, key-on/voice handling) reimplemented after the
+     portable_mdx sources
+   - tools/mxverify/portable_mdx.patch: a patch to portable_mdx (contains a few context lines of it)
+
+2. MXDRVg に由来する部分 / Parts derived from MXDRVg
+   Apache License Version 2.0 (see LICENSE)
+   (MXDRVg の作者 GORRY 氏により、Apache License Version 2.0 で置き換えてよいとされています)
+
+3. MXDRV.X に由来する部分 / Parts derived from MXDRV.X
+   X68000 ネイティブ版 MXDRV.X (milk., K.MAEKAWA, Missy.M, Yatsube) をディスアセンブル
+   したものを GORRY が C 言語へコンバートした MXDRVg を、さらに Yosshin が改変したもの。
+   「X68 的 default のフリーソフトウェア扱い」と思われる。
+   (現代的には Apache License Version 2.0 くらいの扱い、と GORRY 氏が解釈しています)
+
+4. X68Sound.dll に由来する部分 / Parts derived from X68Sound.dll
+   - packages/core/src/pdx.ts x68AdpcmOutput(): the X68000 ADPCM output stage (62.5 kHz hold,
+     10-bit DAC, high-pass and low-pass filters) modelled after x68sound in portable_mdx
+
+   ・本ソースの改変および改変物の公開、自作ソフト等への組み込みおよびそのソフトの配布は
+     自由です。m_puusan への報告は必要ありません。
+   ・本ソフトウェアの使用または使用不能から生じるいかなる損害(利益やデータの損失、その他の
+     金銭的損失など)に関して m_puusan は一切責任を負わないこととします。
+
+--------------------------------------------------------------------------------
+5. ymfm (plugin/opm68/ymfm/)
+   BSD 3-Clause License, Copyright (c) 2021, Aaron Giles
+   https://github.com/aaronsgiles/ymfm (see plugin/opm68/ymfm/LICENSE)
+
+6. DPF - DISTRHO Plugin Framework (used to build the OPM68 plugin; not included in this repository)
+   ISC License, Copyright (C) 2012-2025 Filipe Coelho
+   https://github.com/DISTRHO/DPF (the OPM68 release archives include its LICENSE as LICENSE-DPF.txt)
+
+7. fflate (bundled into the web app build)
+   MIT License, Copyright (c) 2026 Arjun Barrett
+   https://github.com/101arrowz/fflate

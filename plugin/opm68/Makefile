@@ -5,7 +5,7 @@ DPF_PATH ?= ../DPF
 NAME = OPM68
 
 FILES_DSP = OPM68Plugin.cpp ymfm/ymfm_opm.cpp
-FILES_UI  = OPM68UI.cpp NanoButton.cpp
+FILES_UI  = OPM68UI.cpp
 
 USE_FILE_BROWSER = true
 DPF_TARGET_DIR = bin

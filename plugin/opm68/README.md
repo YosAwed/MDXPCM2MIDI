@@ -211,3 +211,6 @@ make WINDOWS=true CC=x86_64-w64-mingw32-gcc-posix CXX=x86_64-w64-mingw32-g++-pos
 配布用の zip (Windows / macOS / Linux) は GitHub Actions ([`.github/workflows/opm68-release.yml`](../../.github/workflows/opm68-release.yml)) で作ります。リリースを公開すると 3 つとも自動でビルドされ、そのリリースに添付されます (Actions タブから手動実行も可)。
 
 `test/render.cpp` はエンジン単体のオフライン描画、`test/clap_smoke.cpp` は CLAP 版を読み込んで鳴らす簡易ホストです。
+
+## ライセンス
+OPM68 は MDXPCM2MIDI の一部として [Apache License 2.0](../../LICENSE) で配布しています。MXDRV の処理 (`MxLfo.hpp`・`OpmEngine.hpp`) は [portable_mdx](https://github.com/yosshin4004/portable_mdx) (MXDRV.X / MXDRVg 由来) を元に再実装したものです。著作権表示と各部分のライセンスは [NOTICE](../../NOTICE) を参照してください。配布用 zip には LICENSE・NOTICE と ymfm (`LICENSE-ymfm.txt`)・DPF (`LICENSE-DPF.txt`) のライセンス文を同梱しています。

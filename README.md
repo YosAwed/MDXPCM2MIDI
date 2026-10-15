@@ -235,5 +235,12 @@ node corpus.mjs summary out.jsonl
 
 ## ライセンス・クレジット
 
+MDXPCM2MIDI (OPM68 を含む) は [Apache License 2.0](LICENSE) で配布しています。由来ごとの著作権表示とライセンスは [NOTICE](NOTICE) にまとめています。
+
+- MXDRV の挙動 (音量テーブル、ソフトウェア LFO、ポルタメント/デチューンなど) は [portable_mdx](https://github.com/yosshin4004/portable_mdx) のソースを元に再実装しています
+  - X68k MXDRV music driver version 2.06+17 Rel.X5-S (c)1988-92 milk., K.MAEKAWA, Missy.M, Yatsube
+  - Converted for Win32 [MXDRVg] V2.00a Copyright (C) 2000-2002 GORRY.
+  - Ported for 64bit environments Copyright (C) 2018 Yosshin.
+- PDX の ADPCM 出力フィルタは portable_mdx 内の X68Sound (X68Sound_src020615 Copyright (C) m_puusan.) を元にしています
 - OPM68 は [ymfm](https://github.com/aaronsgiles/ymfm) (BSD-3-Clause, Aaron Giles) と [DPF](https://github.com/DISTRHO/DPF) (ISC) を使用しています
-- MXDRV との比較には [portable_mdx](https://github.com/yosshin4004/portable_mdx) を使用しています (リポジトリには含めていません)
+- MXDRV との比較ツール (tools/mxverify) は portable_mdx を使用しています (portable_mdx 本体はリポジトリに含めていません)
